@@ -24,6 +24,12 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("BFRM - 气泡流检测与重构")
         self.setGeometry(100, 100, 1200, 800)
+        
+        # YOLO模型相关
+        self.model = None
+        self.trajectories = {}  # 存储气泡轨迹
+        self.bubble_info = {}  # 存储气泡信息
+        
         # 使用相对路径设置图标
         icon_path = os.path.join(os.getcwd(), "bubble.ico")
         if os.path.exists(icon_path):
@@ -552,61 +558,98 @@ class MainWindow(QMainWindow):
         QMessageBox.information(self, "功能已禁用", "文件夹处理功能已被禁用，请使用视频处理功能")
             
     def select_video(self):
-        """选择视频文件进行处理"""
-        video_file, _ = QFileDialog.getOpenFileName(
+        """选择并加载视频文件"""
+        file_path, _ = QFileDialog.getOpenFileName(
             self,
             "选择视频文件",
             self.default_folder,
-            "视频文件 (*.mp4 *.avi *.mov *.mkv)"
+            "视频文件 (*.mp4 *.avi *.mov);;所有文件 (*.*)"
         )
         
-        if video_file:
-            self.data_folder = os.path.dirname(video_file)
-            self.default_folder = self.data_folder
+        if file_path:
+            self.data_folder = os.path.dirname(file_path)
+            self.video_path = file_path
             self.is_video_mode = True
-            self.video_file = video_file
             
-            # 设置输出文件夹路径
-            self.output_folder = self.create_result_folder()
+            # 重置状态
+            self.reset_processing()
             
-            # 删除旧的临时GIF文件（如果存在）
-            for key in self.temp_gif_files.keys():
-                if os.path.exists(self.temp_gif_files[key]):
-                    try:
-                        os.remove(self.temp_gif_files[key])
-                    except:
-                        pass
+            # 初始化YOLO模型
+            if not self.init_yolo_model():
+                QMessageBox.warning(self, "警告", "YOLO模型初始化失败，将无法进行气泡检测！")
             
-            # 重置临时GIF文件路径
-            self.temp_gif_files = {}
+            # 加载视频
+            self.load_video()
             
-            # 重置所有电影对象
-            for key in self.movies.keys():
-                if self.movies[key]:
-                    self.movies[key].stop()
-                    self.movies[key] = None
+    def load_video(self):
+        """加载视频文件"""
+        if not self.video_path or not os.path.exists(self.video_path):
+            return
             
-            # 重置图片缓存
+        try:
+            self.statusbar.showMessage("正在加载视频...")
+            self.add_log(f"开始加载视频: {self.video_path}")
+            
+            # 打开视频文件
+            cap = cv2.VideoCapture(self.video_path)
+            if not cap.isOpened():
+                raise Exception("无法打开视频文件")
+            
+            # 获取视频信息
+            self.video_fps = int(cap.get(cv2.CAP_PROP_FPS))
+            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            
+            # 更新进度条
+            self.progress_bar.setMaximum(total_frames)
+            self.progress_bar.setValue(0)
+            
+            # 清空帧列表
             self.frames = []
-            self.frames_bbox = []
-            self.frames_ellipse = []
+            self.trajectories = {}
             
-            # 重置当前帧索引
-            self.current_frame_index = 0
+            # 读取视频帧
+            frame_count = 0
+            while True:
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                    
+                self.frames.append(frame)
+                frame_count += 1
+                
+                # 更新进度
+                self.progress_bar.setValue(frame_count)
+                if frame_count % 10 == 0:
+                    self.statusbar.showMessage(f"正在加载视频... {frame_count}/{total_frames}")
+                    QApplication.processEvents()
             
-            # 初始化帧滑动条
+            # 关闭视频文件
+            cap.release()
+            
+            # 设置滑动条范围
+            self.frame_slider.setMaximum(len(self.frames) - 1)
             self.frame_slider.setValue(0)
-            self.frame_slider.setEnabled(False)
             
-            # 更新状态栏信息
-            self.statusbar.showMessage(f"已选择视频: {os.path.basename(video_file)}")
+            # 更新显示
+            self.update_display(0)
             
-            # 更新日志
-            self.add_log(f"选择视频文件: {video_file}")
+            # 启用导出按钮
+            self.export_action.setEnabled(True)
             
-            # 直接处理并播放视频，无需等待用户点击处理按钮
-            self.process_video_data()
+            self.statusbar.showMessage(f"视频加载完成，共 {len(self.frames)} 帧")
+            self.add_log(f"视频加载完成: {len(self.frames)} 帧, {self.video_fps} FPS")
             
+            # 自动开始播放
+            self.start_playback()
+            
+        except Exception as e:
+            self.statusbar.showMessage("视频加载失败")
+            error_msg = f"加载视频时出错: {str(e)}"
+            self.add_log(error_msg)
+            QMessageBox.critical(self, "错误", error_msg)
+            import traceback
+            traceback.print_exc()
+
     def process_data(self):
         """处理选定的视频数据"""
         # 检查是否已选择视频
@@ -744,7 +787,6 @@ class MainWindow(QMainWindow):
                 self.is_playing = True
                 interval = int(1000 / (self.video_fps * self.playback_speed))
                 self.frame_timer.start(interval)
-                self.add_log("恢复视频播放")
             
             self.add_log("视频加载完成")
             
@@ -1053,38 +1095,65 @@ class MainWindow(QMainWindow):
         info_layout.setContentsMargins(10, 10, 10, 10)
         info_layout.setSpacing(15)
         
-        # 创建信息显示组
-        info_group = QGroupBox("气泡信息")
-        info_group.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        info_group_layout = QVBoxLayout(info_group)
+        # 创建气泡信息显示组
+        bubble_info_group = QGroupBox("气泡信息")
+        bubble_info_layout = QVBoxLayout(bubble_info_group)
         
-        # 创建信息标签
+        # 创建滚动区域
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setStyleSheet("""
+            QScrollArea {
+                border: none;
+                background: transparent;
+            }
+            QScrollBar:vertical {
+                border: none;
+                background: #f0f0f0;
+                width: 10px;
+                margin: 0px;
+            }
+            QScrollBar::handle:vertical {
+                background: #c0c0c0;
+                min-height: 30px;
+                border-radius: 5px;
+            }
+            QScrollBar::handle:vertical:hover {
+                background: #a0a0a0;
+            }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+                height: 0px;
+            }
+        """)
+        
+        # 创建内容容器
+        content_widget = QWidget()
+        content_layout = QVBoxLayout(content_widget)
+        
+        # 创建气泡信息标签
         self.info_label = QLabel()
         self.info_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-        self.info_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.info_label.setStyleSheet("""
             QLabel {
                 background-color: white;
                 border: 1px solid #cccccc;
                 border-radius: 4px;
                 padding: 10px;
-                font-family: Consolas, Monaco, monospace;
-                font-size: 16px;
-                min-height: 100px;
+                font-family: Arial, sans-serif;
+                font-size: 14px;
             }
         """)
-        self.info_label.setWordWrap(True)
-        info_group_layout.addWidget(self.info_label)
+        content_layout.addWidget(self.info_label)
+        
+        # 将内容容器添加到滚动区域
+        scroll_area.setWidget(content_widget)
+        bubble_info_layout.addWidget(scroll_area)
         
         # 创建日志组
         log_group = QGroupBox("日志")
-        log_group.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        log_group_layout = QVBoxLayout(log_group)
-        
-        # 创建日志标签
+        log_layout = QVBoxLayout(log_group)
         self.log_label = QLabel()
         self.log_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-        self.log_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.log_label.setStyleSheet("""
             QLabel {
                 background-color: white;
@@ -1092,16 +1161,19 @@ class MainWindow(QMainWindow):
                 border-radius: 4px;
                 padding: 10px;
                 font-family: Consolas, Monaco, monospace;
-                font-size: 16px;
-                min-height: 100px;
+                font-size: 12px;
             }
         """)
         self.log_label.setWordWrap(True)
-        log_group_layout.addWidget(self.log_label)
+        log_layout.addWidget(self.log_label)
+        
+        # 设置组件大小策略
+        bubble_info_group.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        log_group.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         
         # 添加组到面板
-        info_layout.addWidget(info_group, 1)  # 设置拉伸因子为1
-        info_layout.addWidget(log_group, 1)   # 设置拉伸因子为1
+        info_layout.addWidget(bubble_info_group)
+        info_layout.addWidget(log_group)
         
         return info_panel
         
@@ -1302,6 +1374,9 @@ class MainWindow(QMainWindow):
             if self.loop_checkbox.isChecked():
                 # 循环播放，回到第一帧
                 next_index = 0
+                # 清空气泡轨迹
+                self.trajectories = {}
+                self.add_log("循环播放：清空气泡轨迹")
             else:
                 # 暂停播放，但保持在最后一帧
                 self.pause_playback()
@@ -1342,42 +1417,30 @@ class MainWindow(QMainWindow):
         # 获取当前帧
         frame = self.frames[frame_index]
         
-        # 更新气泡流图像
+        # 使用YOLO处理当前帧
+        processed_frame, frame_info = self.process_frame_with_yolo(frame, frame_index)
+        
+        # 更新气泡信息显示
+        self.update_bubble_info_display(frame_info)
+        
+        # 更新原始视频显示
         if hasattr(self, 'content_labels') and self.content_labels.get('flow'):
             self._update_label_with_image(self.content_labels['flow'], frame)
 
-        # 更新气泡检测图像（如果有）
+        # 更新检测结果显示
         if hasattr(self, 'content_labels') and self.content_labels.get('detection'):
-            if hasattr(self, 'detection_frames') and len(self.detection_frames) > frame_index:
-                self._update_label_with_image(self.content_labels['detection'], self.detection_frames[frame_index])
-            elif frame_index < len(self.frames):
-                self._update_label_with_image(self.content_labels['detection'], self.frames[frame_index])
+            self._update_label_with_image(self.content_labels['detection'], processed_frame)
 
         # 更新3D重建图像（如果有）
         if hasattr(self, 'content_labels') and self.content_labels.get('3d'):
-            # 如果有3D重建图像，更新它
+            # TODO: 实现3D重建显示
             pass
 
         # 更新简化流场图像（如果有）
         if hasattr(self, 'content_labels') and self.content_labels.get('empty'):
-            # 如果有简化流场图像，更新它
+            # TODO: 实现简化流场显示
             pass
-            
-        # 更新信息面板
-        if hasattr(self, 'info_label'):
-            # 更新气泡信息显示
-            info_text = "<div style='font-family: monospace;'>"
-            info_text += f"<b>处理摘要</b><br>"
-            info_text += f"视频文件: {os.path.basename(self.video_file)}<br>"
-            info_text += f"帧数: {frame_index + 1}/{len(self.frames)}<br>"
-            info_text += f"帧率: {self.video_fps} FPS<br>"
-            info_text += f"检测到气泡: {self._count_bubbles(frame_index)} 个<br>"
-            info_text += f"平均每帧: {self._average_bubbles_per_frame()} 个气泡<br>"
-            info_text += f"输出文件夹: {os.path.basename(self.output_folder)}<br>"
-            info_text += "</div>"
-            
-            self.info_label.setText(info_text)
-            
+
         # 更新状态栏，显示当前帧信息
         self.statusbar.showMessage(f"当前帧: {frame_index + 1}/{len(self.frames)}, 播放速度: {self.playback_speed}x")
         
@@ -1444,85 +1507,65 @@ class MainWindow(QMainWindow):
     
     def start_playback(self):
         """开始播放视频"""
-        if not self.is_video_mode or not self.frames or self.is_playing:
+        if not self.frames or len(self.frames) == 0:
             return
             
-        # 计算定时器间隔（毫秒）
-        interval = int(1000 / (self.video_fps * self.playback_speed))
-        
-        # 启动定时器
-        self.frame_timer.start(interval)
         self.is_playing = True
         
-        # 更新播放按钮状态
-        self.play_pause_btn.setText('暂停')
-        self.play_pause_btn.setIcon(QIcon("icons/pause.png"))
+        # 计算帧间隔时间（毫秒）
+        interval = int(1000 / (self.video_fps * self.playback_speed))
+        self.frame_timer.start(interval)
         
-        self.add_log(f"开始播放视频，帧率: {self.video_fps} FPS，播放速度: {self.playback_speed}x")
+        self.add_log("开始播放视频")
     
     def pause_playback(self):
-        """暂停视频播放"""
+        """暂停播放视频"""
         if not self.is_playing:
             return
             
-        # 停止定时器
         self.frame_timer.stop()
         self.is_playing = False
-        
-        # 更新播放按钮状态
-        self.play_pause_btn.setText('播放')
-        self.play_pause_btn.setIcon(QIcon("icons/play.png"))
-        
-        # 确保当前帧索引与滑动条同步
-        self.frame_slider.blockSignals(True)
-        self.frame_slider.setValue(self.current_frame_index)
-        self.frame_slider.blockSignals(False)
-        
-        # 确保界面显示更新
-        self.update_display(self.current_frame_index)
         
         self.add_log("暂停视频播放")
     
     def stop_playback(self):
-        """停止视频播放并重置"""
-        # 停止定时器
+        """停止播放视频"""
+        if not self.frames:
+            return
+            
+        # 停止播放
         self.frame_timer.stop()
         self.is_playing = False
         
         # 重置到第一帧
         self.current_frame_index = 0
-        if self.frame_slider.isEnabled():
-            self.frame_slider.setValue(0)
-        
-        # 更新播放按钮状态
-        self.play_pause_btn.setText('播放')
-        self.play_pause_btn.setIcon(QIcon("icons/play.png"))
-        
-        # 停止所有动画（对于非视频模式）
-        for movie in self.movies.values():
-            if movie and movie.isValid() and movie.state() == QMovie.MovieState.Running:
-                movie.stop()
+        self.frame_slider.setValue(0)
+        self.update_display(0)
         
         self.add_log("停止视频播放")
     
     def replay_animations(self):
-        """重新播放视频"""
+        """重新播放动画"""
+        if not self.frames or len(self.frames) == 0:
+            return
+            
         # 停止当前播放
         self.stop_playback()
         
-        # 更新当前帧索引到第一帧
+        # 重置气泡轨迹
+        self.trajectories = {}
+        
+        # 重置到第一帧
         self.current_frame_index = 0
         self.frame_slider.setValue(0)
         
-        # 显示第一帧
+        # 更新显示
         self.update_display(0)
         
-        # 重新开始播放
-        if self.frames and len(self.frames) > 0:
-            # 使用帧序列和定时器播放
-            self.start_playback()
+        # 开始播放
+        self.start_playback()
         
-        self.add_log("重新播放视频")
+        self.add_log("重新开始播放视频")
     
     def frame_slider_changed(self, value):
         """滑动条值改变事件处理
@@ -1674,3 +1717,208 @@ class MainWindow(QMainWindow):
         else:
             # 其他按键，交给父类处理
             super().keyPressEvent(event)
+
+    def init_yolo_model(self):
+        """初始化YOLO模型"""
+        try:
+            from ultralytics import YOLO
+            import os
+            os.environ['KMP_DUPLICATE_LIB_OK']='True'
+            
+            self.add_log("正在初始化YOLO模型...")
+            self.model = YOLO(r'C:\codebase\yolo\model\yolo11n-obb.pt')
+            self.add_log("YOLO模型初始化完成")
+            return True
+        except Exception as e:
+            self.add_log(f"YOLO模型初始化失败: {str(e)}")
+            return False
+            
+    def process_frame_with_yolo(self, frame, frame_index):
+        """使用YOLO模型处理单帧图像
+        
+        Args:
+            frame: 输入图像帧
+            frame_index: 帧索引
+            
+        Returns:
+            processed_frame: 处理后的图像帧
+            frame_info: 当前帧的气泡信息
+        """
+        import cv2
+        import numpy as np
+        
+        if self.model is None:
+            if not self.init_yolo_model():
+                return frame, {}
+        
+        # 复制输入帧
+        processed_frame = frame.copy()
+        frame_info = {}
+        
+        try:
+            # 使用YOLO模型进行检测，禁用终端输出
+            results = self.model.track(
+                processed_frame,
+                persist=True,
+                show_boxes=True,
+                tracker='botsort.yaml',
+                verbose=False
+            )
+            
+            if results and len(results) > 0:
+                r = results[0]  # 获取第一个结果
+                
+                # 设置绘制参数
+                lw = max(round(sum(processed_frame.shape) / 2 * 0.002), 2)
+                tf = max(lw - 1, 1)
+                sf = lw / 3
+                
+                # 处理每个检测到的气泡
+                for i in range(len(r.obb)):
+                    box = r.obb.xyxyxyxy[i].reshape(-1, 4, 2).squeeze()
+                    rbox = r.obb.xywhr[i]
+                    center = (rbox[0], rbox[1])
+                    
+                    # 获取气泡ID
+                    bubble_id = int(r.obb.id[i]) if hasattr(r.obb, 'id') else i
+                    
+                    # 更新气泡轨迹
+                    if bubble_id not in self.trajectories:
+                        self.trajectories[bubble_id] = []
+                    self.trajectories[bubble_id].append(center)
+                    if len(self.trajectories[bubble_id]) > 100:
+                        self.trajectories[bubble_id].pop(0)
+                    
+                    # 绘制轨迹
+                    color = (0, 0, 192) if r.obb.cls[i] else (53, 130, 84)
+                    for j in range(1, len(self.trajectories[bubble_id])):
+                        start_point = tuple(map(int, self.trajectories[bubble_id][j-1]))
+                        end_point = tuple(map(int, self.trajectories[bubble_id][j]))
+                        cv2.line(processed_frame, start_point, end_point, color, 2)
+                    
+                    # 绘制检测框
+                    cv2.polylines(processed_frame, [np.asarray(box, dtype=int)], True, color, lw)
+                    
+                    # 计算气泡信息
+                    w, h = rbox[2], rbox[3]
+                    angle = rbox[4] * 180 / np.pi
+                    
+                    # 计算速度
+                    speed = 0
+                    if len(self.trajectories[bubble_id]) >= 2:
+                        speed = np.linalg.norm(
+                            np.array(self.trajectories[bubble_id][-1]) - 
+                            np.array(self.trajectories[bubble_id][-2])
+                        ) * 0.080128 * 0.001 / 0.00001
+                    
+                    # 计算体积
+                    volume = (w * w * h * 0.080128 ** 3)
+                    
+                    # 存储气泡信息
+                    frame_info[bubble_id] = {
+                        'id': bubble_id,
+                        'x': center[0],
+                        'y': center[1],
+                        'width': w,
+                        'height': h,
+                        'angle': angle,
+                        'speed': speed,
+                        'volume': volume
+                    }
+            
+            return processed_frame, frame_info
+            
+        except Exception as e:
+            self.add_log(f"处理帧 {frame_index} 时出错: {str(e)}")
+            return frame, {}
+
+    def update_bubble_info_display(self, frame_info):
+        """更新气泡信息显示
+        
+        Args:
+            frame_info: 当前帧的气泡信息字典
+        """
+        if not frame_info:
+            if hasattr(self, 'info_label'):
+                self.info_label.setText("<div style='text-align:center; padding:20px;'>暂无气泡信息</div>")
+            return
+            
+        # 创建HTML表格
+        table_html = """
+        <style>
+            .container {
+                font-family: Arial, sans-serif;
+                font-size: 13px;
+                color: #333;
+            }
+            .header {
+                font-size: 14px;
+                font-weight: bold;
+                margin-bottom: 10px;
+                color: #333;
+                background-color: #f8f9fa;
+                padding: 8px;
+                border-radius: 4px;
+            }
+            table {
+                width: 100%;
+                border-collapse: collapse;
+                margin-top: 5px;
+            }
+            th {
+                background-color: #4CAF50;
+                color: white;
+                font-weight: bold;
+                padding: 8px 4px;
+                position: sticky;
+                top: 0;
+            }
+            td {
+                padding: 6px 4px;
+                border-bottom: 1px solid #ddd;
+            }
+            tr:nth-child(even) {
+                background-color: #f8f8f8;
+            }
+            tr:hover {
+                background-color: #f0f0f0;
+            }
+        </style>
+        <div class='container'>
+            <div class='header'>
+                当前检测到 {len(frame_info)} 个气泡
+            </div>
+            <table>
+                <tr>
+                    <th>气泡ID</th>
+                    <th>位置(x,y)</th>
+                    <th>尺寸(w×h)</th>
+                    <th>角度(°)</th>
+                    <th>速度(m/s)</th>
+                    <th>体积(mm³)</th>
+                </tr>
+        """
+        
+        # 按气泡ID排序
+        sorted_bubbles = sorted(frame_info.items(), key=lambda x: x[0])
+        
+        for bubble_id, info in sorted_bubbles:
+            table_html += f"""
+                <tr>
+                    <td>{info['id']}</td>
+                    <td>({info['x']:.1f}, {info['y']:.1f})</td>
+                    <td>{info['width']:.1f}×{info['height']:.1f}</td>
+                    <td>{info['angle']:.1f}</td>
+                    <td>{info['speed']:.2f}</td>
+                    <td>{info['volume']:.2f}</td>
+                </tr>
+            """
+        
+        table_html += """
+            </table>
+        </div>
+        """
+        
+        # 更新信息标签
+        if hasattr(self, 'info_label'):
+            self.info_label.setText(table_html)
