@@ -44,12 +44,12 @@ class MainWindow(QMainWindow):
         self.device = 'cpu'  # 默认设备
         self.log_history = []  # 日志历史
         self.output_folder = "results"  # 输出文件夹
+        self.result_root = "results"  # 结果根目录
+        self.content_labels = {}  # 内容标签字典
+        self.default_folder = "."  # 默认文件夹为当前目录
+        self.movies = {}  # 动画字典
         
-        # 初始化多线程处理
-        from concurrent.futures import ThreadPoolExecutor
-        import queue
-        self.thread_pool = ThreadPoolExecutor(max_workers=4)  # 创建线程池
-        self.frame_queue = queue.Queue(maxsize=30)  # 预处理帧队列
+        # 初始化处理缓存
         self.processed_frames_cache = {}  # 处理后的帧缓存
         self.is_preprocessing = False  # 是否正在预处理
         
@@ -606,7 +606,19 @@ class MainWindow(QMainWindow):
             self.frame_slider.setValue(0)
             
             # 更新显示
-            self.update_display(0)
+            self.current_frame_index = 0
+            if len(self.frames) > 0:
+                # 直接更新气泡流图像
+                if 'flow' in self.content_labels and self.content_labels['flow'] is not None:
+                    self._update_label_with_image(self.content_labels['flow'], self.frames[0])
+                
+                # 处理第一帧并更新气泡检测图像
+                processed_frame, frame_info = self.process_frame_with_yolo(self.frames[0], 0)
+                if 'detection' in self.content_labels and self.content_labels['detection'] is not None:
+                    self._update_label_with_image(self.content_labels['detection'], processed_frame)
+                
+                # 更新气泡信息显示
+                self.update_bubble_info_display(frame_info)
             
             # 启用导出按钮
             self.export_action.setEnabled(True)
@@ -1383,6 +1395,37 @@ class MainWindow(QMainWindow):
             
         # 清理过期缓存（保留前后各50帧）
         self._clean_frame_cache(frame_index)
+        
+        # 更新当前帧索引
+        self.current_frame_index = frame_index
+        
+        # 更新帧数标签
+        if hasattr(self, 'frame_number_label'):
+            self.frame_number_label.setText(f"{frame_index + 1}/{len(self.frames)}")
+        
+        # 如果没有帧，直接返回
+        if not self.frames or frame_index >= len(self.frames):
+            return
+            
+        # 获取原始帧
+        original_frame = self.frames[frame_index]
+        
+        # 更新气泡流图像（原始图像）
+        if 'flow' in self.content_labels and self.content_labels['flow'] is not None:
+            self._update_label_with_image(self.content_labels['flow'], original_frame)
+        
+        # 获取处理后的帧和帧信息
+        processed_frame, frame_info = self.get_processed_frame(frame_index)
+        
+        # 更新气泡检测图像（处理后的图像）
+        if 'detection' in self.content_labels and self.content_labels['detection'] is not None:
+            self._update_label_with_image(self.content_labels['detection'], processed_frame)
+            
+        # 更新气泡信息显示
+        self.update_bubble_info_display(frame_info)
+        
+        # 添加日志
+        self.add_log(f"更新显示: 帧 {frame_index + 1}/{len(self.frames)}")
     
     def _clean_frame_cache(self, current_index):
         """清理过期的帧缓存
@@ -1925,21 +1968,19 @@ class MainWindow(QMainWindow):
         self.info_label.setText(table_html)
 
     def start_frame_preprocessing(self):
-        """启动帧预处理线程"""
+        """启动帧预处理"""
         if self.is_preprocessing or not self.frames:
             return
             
         self.is_preprocessing = True
-        self.add_log("启动帧预处理线程")
+        self.add_log("开始预处理帧")
         
-        # 提交预处理任务到线程池
-        self.thread_pool.submit(self.preprocess_frames_worker)
+        # 直接调用预处理函数，不使用线程
+        self.preprocess_frames_worker()
     
     def preprocess_frames_worker(self):
-        """预处理帧的工作线程"""
+        """预处理帧"""
         try:
-            import time
-            
             # 计算需要预处理的帧范围
             start_idx = max(0, self.current_frame_index - 5)
             end_idx = min(len(self.frames), self.current_frame_index + 30)
@@ -1959,12 +2000,10 @@ class MainWindow(QMainWindow):
                 # 缓存处理结果
                 self.processed_frames_cache[i] = (processed_frame, frame_info)
                 
-                # 如果队列已满，等待
-                while self.frame_queue.full():
-                    time.sleep(0.01)
-                    
-                # 将处理结果放入队列
-                self.frame_queue.put((i, processed_frame, frame_info))
+                # 更新进度
+                if i % 5 == 0:
+                    self.statusbar.showMessage(f"预处理帧: {i}/{end_idx}")
+                    QApplication.processEvents()  # 允许UI更新
                 
             self.add_log(f"预处理完成，共处理 {end_idx - start_idx} 帧")
             
