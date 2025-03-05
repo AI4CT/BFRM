@@ -1193,8 +1193,8 @@ class MainWindow(QMainWindow):
             self.log_label.setText(log_text)
             self.log_label.repaint()  # 确保立即更新
         
-        # 打印到控制台（调试用）
-        print(log_entry)
+        # 打印到控制台（调试用）- 注释掉以避免字体警告
+        # print(log_entry)
     
     def show_about(self):
         """显示关于对话框"""
@@ -1376,6 +1376,7 @@ class MainWindow(QMainWindow):
                 next_index = 0
                 # 清空气泡轨迹
                 self.trajectories = {}
+                # 使用日志记录而不是直接打印
                 self.add_log("循环播放：清空气泡轨迹")
             else:
                 # 暂停播放，但保持在最后一帧
@@ -1838,51 +1839,54 @@ class MainWindow(QMainWindow):
         Args:
             frame_info: 当前帧的气泡信息字典
         """
+        if not hasattr(self, 'info_label'):
+            return
+            
         if not frame_info:
-            if hasattr(self, 'info_label'):
-                self.info_label.setText("<div style='text-align:center; padding:20px;'>暂无气泡信息</div>")
+            self.info_label.setText("<p style='text-align:center; margin-top:20px;'>当前帧没有检测到气泡</p>")
             return
             
         # 创建HTML表格
-        table_html = """
+        table_html = f"""
         <style>
-            .container {
+            .container {{
                 font-family: Arial, sans-serif;
-                font-size: 13px;
-                color: #333;
-            }
-            .header {
-                font-size: 14px;
-                font-weight: bold;
-                margin-bottom: 10px;
-                color: #333;
-                background-color: #f8f9fa;
+                margin: 0;
+                padding: 0;
+                width: 100%;
+            }}
+            .header {{
+                background-color: #f0f8ff;
                 padding: 8px;
+                margin-bottom: 10px;
                 border-radius: 4px;
-            }
-            table {
+                font-weight: bold;
+                text-align: center;
+            }}
+            table {{
                 width: 100%;
                 border-collapse: collapse;
                 margin-top: 5px;
-            }
-            th {
+            }}
+            th {{
                 background-color: #4CAF50;
                 color: white;
+                text-align: center;
                 font-weight: bold;
                 padding: 8px 4px;
                 position: sticky;
                 top: 0;
-            }
-            td {
+            }}
+            td {{
                 padding: 6px 4px;
                 border-bottom: 1px solid #ddd;
-            }
-            tr:nth-child(even) {
+            }}
+            tr:nth-child(even) {{
                 background-color: #f8f8f8;
-            }
-            tr:hover {
+            }}
+            tr:hover {{
                 background-color: #f0f0f0;
-            }
+            }}
         </style>
         <div class='container'>
             <div class='header'>
@@ -1890,6 +1894,7 @@ class MainWindow(QMainWindow):
             </div>
             <table>
                 <tr>
+                    <th>序号</th>
                     <th>气泡ID</th>
                     <th>位置(x,y)</th>
                     <th>尺寸(w×h)</th>
@@ -1902,9 +1907,11 @@ class MainWindow(QMainWindow):
         # 按气泡ID排序
         sorted_bubbles = sorted(frame_info.items(), key=lambda x: x[0])
         
-        for bubble_id, info in sorted_bubbles:
+        # 添加行号
+        for row_num, (bubble_id, info) in enumerate(sorted_bubbles, 1):
             table_html += f"""
                 <tr>
+                    <td>{row_num}</td>
                     <td>{info['id']}</td>
                     <td>({info['x']:.1f}, {info['y']:.1f})</td>
                     <td>{info['width']:.1f}×{info['height']:.1f}</td>
@@ -1913,12 +1920,10 @@ class MainWindow(QMainWindow):
                     <td>{info['volume']:.2f}</td>
                 </tr>
             """
-        
+            
         table_html += """
             </table>
         </div>
         """
         
-        # 更新信息标签
-        if hasattr(self, 'info_label'):
-            self.info_label.setText(table_html)
+        self.info_label.setText(table_html)
