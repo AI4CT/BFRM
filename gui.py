@@ -22,69 +22,44 @@ from reconstruction3d import reconstruct_3d
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("BFRM - 气泡流检测与重构")
-        self.setGeometry(100, 100, 1200, 800)
         
-        # YOLO模型相关
-        self.model = None
-        self.trajectories = {}  # 存储气泡轨迹
-        self.bubble_info = {}  # 存储气泡信息
+        # 设置应用程序标题
+        self.setWindowTitle("气泡流重建模型")
         
-        # 使用相对路径设置图标
-        icon_path = os.path.join(os.getcwd(), "bubble.ico")
-        if os.path.exists(icon_path):
-            self.setWindowIcon(QIcon(icon_path))
-        # 设置默认路径为当前目录
-        self.default_folder = os.getcwd()
-        self.result_root = os.path.join(os.getcwd(), "results")
-        self.output_folder = self.create_result_folder()
-        self.data_folder = ""  # 初始化数据文件夹路径
+        # 设置应用程序图标
+        self.setWindowIcon(QIcon("bubble.ico"))
         
-        # 初始化临时GIF文件字典
-        self.temp_gif_files = {}
-        
-        # 存储内容标签的引用
-        self.content_labels = {
-            'flow': None,
-            'detection': None,
-            '3d': None,
-            'info': None
-        }
-        
-        self.frames = []
-        self.frames_bbox = []
-        self.frames_ellipse = []
-        self.movies = {}  # 存储不同类型的QMovie对象
-        self.current_labels = {}  # 存储不同类型的显示标签
+        # 初始化变量
+        self.frames = []  # 存储视频帧
+        self.detection_frames = []  # 存储检测结果帧
         self.current_frame_index = 0  # 当前帧索引
-        self.bubble_trail = []  # 存储气泡轨迹
-        self.playback_speed = 1.0  # 播放速度倍率
-        self.max_speed = 0  # 添加最大速度属性
-        self.log_history = []  # 存储日志历史
-        self.log_update_interval = 5  # 每5帧更新一次日志
-        self.frame_info_dict = {}  # 存储每一帧的信息字典
-        
-        # 添加视频处理相关变量
-        self.video_path = ""
-        self.is_video_mode = False
+        self.is_playing = False  # 播放状态
+        self.playback_speed = 1.0  # 播放速度
         self.video_fps = 30  # 默认帧率
-        self.is_playing = False  # 视频是否在播放
+        self.frame_count = 0  # 总帧数
+        self.is_video_mode = False  # 是否为视频模式
+        self.frame_info_dict = {}  # 帧信息字典
+        self.trajectories = {}  # 气泡轨迹
+        self.model = None  # YOLO模型
+        self.device = 'cpu'  # 默认设备
+        self.log_history = []  # 日志历史
+        self.output_folder = "results"  # 输出文件夹
         
-        # 添加视频帧显示定时器
-        self.frame_timer = QTimer(self)
-        self.frame_timer.timeout.connect(self.next_frame)
+        # 初始化多线程处理
+        from concurrent.futures import ThreadPoolExecutor
+        import queue
+        self.thread_pool = ThreadPoolExecutor(max_workers=4)  # 创建线程池
+        self.frame_queue = queue.Queue(maxsize=30)  # 预处理帧队列
+        self.processed_frames_cache = {}  # 处理后的帧缓存
+        self.is_preprocessing = False  # 是否正在预处理
         
-        # 添加3D可视化组件
-        self.canvas_3d = None
+        # 创建结果文件夹
+        self.create_result_folder()
         
+        # 初始化UI
         self.init_ui()
         
-        self.movies = {
-            'flow': QMovie(),
-            'bbox': QMovie()
-        }
-        
-        # 添加程序启动日志
+        # 添加日志
         self.add_log("程序启动完成")
         self.add_log("提示: 可以通过'选择视频'按钮直接加载视频文件")
         self.add_log("提示: 视频加载后可以使用滑动条控制播放位置")
@@ -675,52 +650,55 @@ class MainWindow(QMainWindow):
             
     def process_video_data(self):
         """处理视频数据"""
+        import cv2
+        from PyQt6.QtWidgets import QApplication
+        
+        if not self.video_path or not os.path.exists(self.video_path):
+            self.add_log("视频文件不存在")
+            return
+            
         try:
-            self.statusbar.showMessage("开始加载视频文件")
-            self.add_log(f"开始加载视频文件: {self.video_file}")
-
-            # 更新界面，重置进度条
-            self.progress_bar.setValue(0)
-            QApplication.processEvents()  # 确保进度条重置立即显示
+            # 重置处理状态
+            self.reset_processing()
             
             # 打开视频文件
-            cap = cv2.VideoCapture(self.video_file)
+            cap = cv2.VideoCapture(self.video_path)
             if not cap.isOpened():
-                raise ValueError(f"无法读取视频: {self.video_file}")
-            
+                self.add_log(f"无法打开视频文件: {self.video_path}")
+                return
+                
             # 获取视频信息
             self.frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
             self.video_fps = cap.get(cv2.CAP_PROP_FPS)
+            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
             
-            print(f"视频总帧数: {self.frame_count}, FPS: {self.video_fps}")
+            # 更新进度条最大值
+            self.progress_bar.setMaximum(100)  # 使用百分比
+            self.progress_bar.setValue(0)
+            QApplication.processEvents()  # 确保进度条重置立即显示
             
-            # 初始化帧列表和帧信息
+            # 更新帧滑动条
+            self.frame_slider.setMinimum(0)
+            self.frame_slider.setMaximum(self.frame_count - 1)
+            self.frame_slider.setValue(0)
+            self.frame_slider.setEnabled(True)
+            
+            # 清空帧列表
             self.frames = []
             self.detection_frames = []
             self.frame_info_dict = {}
+            self.trajectories = {}
+            self.processed_frames_cache = {}
             
-            # 记录播放状态变量
-            self.playback_started = False
-            was_playing = self.is_playing
-            
-            # 如果当前正在播放，先暂停(但不更新UI)
-            if was_playing:
-                self.frame_timer.stop()
-                self.is_playing = False
-            
-            # 初始化帧索引和帧信息
-            self.current_frame_index = 0
-            self.frame_slider.setMaximum(self.frame_count - 1)
-            self.frame_slider.setEnabled(True)
-            
-            # 设置为视频模式
-            self.is_video_mode = True
-            
-            # 开始加载帧
-            frames_before_play = min(30, self.frame_count // 10)  # 加载大约30帧或10%的帧后开始播放
+            # 添加日志
+            self.add_log(f"开始加载视频: {self.video_path}")
             
             # 读取视频帧
             frames_read = 0
+            frames_before_play = min(30, self.frame_count)  # 读取30帧后开始播放
+            self.playback_started = False
+            
             for i in range(self.frame_count):
                 ret, frame = cap.read()
                 if not ret:
@@ -760,41 +738,22 @@ class MainWindow(QMainWindow):
             currently_playing = self.is_playing
             current_pos = self.current_frame_index
             
-            # 如果当前正在播放，先暂停(但不更新UI)，以便更新界面
-            if currently_playing:
-                self.frame_timer.stop()
-                self.is_playing = False
-            
-            # 更新最终状态
-            self.statusbar.showMessage(f"视频加载完成: {len(self.frames)}帧, {self.video_fps} FPS")
-            self.add_log(f"加载完成: {len(self.frames)} 帧, {self.video_fps} FPS")
-            
-            # 先保存播放状态，然后更新界面
+            # 更新界面显示
             self.update_interface_display()
             
-            # 恢复当前帧索引和滑动条位置
-            self.current_frame_index = current_pos
-            self.frame_slider.blockSignals(True)
-            self.frame_slider.setValue(current_pos)
-            self.frame_slider.blockSignals(False)
+            # 添加日志
+            self.add_log(f"视频加载完成: {frames_read} 帧, {self.video_fps:.0f} FPS")
             
-            # 更新当前帧显示
-            self.update_display(current_pos)
-            self.add_log("更新界面显示")
+            # 启动预处理线程
+            self.start_frame_preprocessing()
             
-            # 如果之前在播放，恢复播放状态
+            # 如果之前在播放，则继续播放
             if currently_playing:
-                self.is_playing = True
-                interval = int(1000 / (self.video_fps * self.playback_speed))
-                self.frame_timer.start(interval)
-            
-            self.add_log("视频加载完成")
-            
+                self.start_playback()
+                
         except Exception as e:
-            self.statusbar.showMessage("处理视频失败")
-            self.add_log(f"处理视频失败: {str(e)}")
-            print(str(e))
             import traceback
+            self.add_log(f"处理视频时出错: {str(e)}")
             traceback.print_exc()
     
     def process_folder_data(self):
@@ -1376,8 +1335,12 @@ class MainWindow(QMainWindow):
                 next_index = 0
                 # 清空气泡轨迹
                 self.trajectories = {}
+                # 清空处理帧缓存
+                self.processed_frames_cache = {}
                 # 使用日志记录而不是直接打印
-                self.add_log("循环播放：清空气泡轨迹")
+                self.add_log("循环播放：清空气泡轨迹和缓存")
+                # 启动预处理线程
+                self.start_frame_preprocessing()
             else:
                 # 暂停播放，但保持在最后一帧
                 self.pause_playback()
@@ -1404,47 +1367,48 @@ class MainWindow(QMainWindow):
         
         # 更新显示
         self.update_display(next_index)
+        
+        # 如果接近视频末尾且没有在预处理，启动预处理
+        if next_index > len(self.frames) - 30 and not self.is_preprocessing and self.loop_checkbox.isChecked():
+            self.start_frame_preprocessing()
 
     def update_display(self, frame_index):
         """更新显示"""
-        if not hasattr(self, 'frames') or not self.frames or frame_index >= len(self.frames):
+        # 更新状态栏
+        if hasattr(self, 'statusbar'):
+            cache_info = f"缓存: {len(self.processed_frames_cache)}/{len(self.frames)}"
+            speed_info = f"速度: {self.playback_speed}x"
+            device_info = f"设备: {self.device}"
+            self.statusbar.showMessage(f"{cache_info} | {speed_info} | {device_info}")
+            
+        # 清理过期缓存（保留前后各50帧）
+        self._clean_frame_cache(frame_index)
+    
+    def _clean_frame_cache(self, current_index):
+        """清理过期的帧缓存
+        
+        保留当前帧前后各50帧的缓存，删除其他缓存
+        
+        Args:
+            current_index: 当前帧索引
+        """
+        if len(self.processed_frames_cache) < 100:
             return
-
-        # 更新帧号标签
-        if hasattr(self, 'frame_number_label'):
-            total_frames = len(self.frames)
-            self.frame_number_label.setText(f"{frame_index + 1}/{total_frames}")
-
-        # 获取当前帧
-        frame = self.frames[frame_index]
+            
+        # 计算需要保留的帧范围
+        start_keep = max(0, current_index - 50)
+        end_keep = min(len(self.frames), current_index + 50)
         
-        # 使用YOLO处理当前帧
-        processed_frame, frame_info = self.process_frame_with_yolo(frame, frame_index)
-        
-        # 更新气泡信息显示
-        self.update_bubble_info_display(frame_info)
-        
-        # 更新原始视频显示
-        if hasattr(self, 'content_labels') and self.content_labels.get('flow'):
-            self._update_label_with_image(self.content_labels['flow'], frame)
-
-        # 更新检测结果显示
-        if hasattr(self, 'content_labels') and self.content_labels.get('detection'):
-            self._update_label_with_image(self.content_labels['detection'], processed_frame)
-
-        # 更新3D重建图像（如果有）
-        if hasattr(self, 'content_labels') and self.content_labels.get('3d'):
-            # TODO: 实现3D重建显示
-            pass
-
-        # 更新简化流场图像（如果有）
-        if hasattr(self, 'content_labels') and self.content_labels.get('empty'):
-            # TODO: 实现简化流场显示
-            pass
-
-        # 更新状态栏，显示当前帧信息
-        self.statusbar.showMessage(f"当前帧: {frame_index + 1}/{len(self.frames)}, 播放速度: {self.playback_speed}x")
-        
+        # 删除范围外的缓存
+        keys_to_delete = []
+        for key in self.processed_frames_cache.keys():
+            if key < start_keep or key > end_keep:
+                keys_to_delete.append(key)
+                
+        # 删除过期缓存
+        for key in keys_to_delete:
+            del self.processed_frames_cache[key]
+    
     def _count_bubbles(self, frame_index):
         """计算当前帧检测到的气泡数量"""
         if frame_index in self.frame_info_dict and 'bubbles' in self.frame_info_dict[frame_index]:
@@ -1515,7 +1479,25 @@ class MainWindow(QMainWindow):
         
         # 计算帧间隔时间（毫秒）
         interval = int(1000 / (self.video_fps * self.playback_speed))
+        
+        # 创建帧定时器（如果不存在）
+        if not hasattr(self, 'frame_timer'):
+            self.frame_timer = QTimer(self)
+            self.frame_timer.timeout.connect(self.next_frame)
+        else:
+            # 如果定时器已存在，先停止它
+            self.frame_timer.stop()
+        
+        # 启动定时器
         self.frame_timer.start(interval)
+        
+        # 更新播放/暂停按钮
+        if hasattr(self, 'play_pause_btn'):
+            self.play_pause_btn.setText('暂停')
+            self.play_pause_btn.setIcon(QIcon("icons/pause.png"))
+        
+        # 启动预处理线程
+        self.start_frame_preprocessing()
         
         self.add_log("开始播放视频")
     
@@ -1724,11 +1706,24 @@ class MainWindow(QMainWindow):
         try:
             from ultralytics import YOLO
             import os
+            import torch
             os.environ['KMP_DUPLICATE_LIB_OK']='True'
             
             self.add_log("正在初始化YOLO模型...")
+            
+            # 检查CUDA是否可用
+            if torch.cuda.is_available():
+                self.add_log(f"CUDA可用: {torch.cuda.get_device_name(0)}")
+                self.device = 'cuda:0'
+            else:
+                self.add_log("CUDA不可用，使用CPU")
+                self.device = 'cpu'
+                
+            # 加载模型并指定设备
             self.model = YOLO(r'C:\codebase\yolo\model\yolo11n-obb.pt')
-            self.add_log("YOLO模型初始化完成")
+            self.model.to(self.device)
+            
+            self.add_log(f"YOLO模型初始化完成，使用设备: {self.device}")
             return True
         except Exception as e:
             self.add_log(f"YOLO模型初始化失败: {str(e)}")
@@ -1757,13 +1752,14 @@ class MainWindow(QMainWindow):
         frame_info = {}
         
         try:
-            # 使用YOLO模型进行检测，禁用终端输出
+            # 使用YOLO模型进行检测，指定设备
             results = self.model.track(
                 processed_frame,
                 persist=True,
                 show_boxes=True,
                 tracker='botsort.yaml',
-                verbose=False
+                verbose=False,
+                device=self.device
             )
             
             if results and len(results) > 0:
@@ -1927,3 +1923,73 @@ class MainWindow(QMainWindow):
         """
         
         self.info_label.setText(table_html)
+
+    def start_frame_preprocessing(self):
+        """启动帧预处理线程"""
+        if self.is_preprocessing or not self.frames:
+            return
+            
+        self.is_preprocessing = True
+        self.add_log("启动帧预处理线程")
+        
+        # 提交预处理任务到线程池
+        self.thread_pool.submit(self.preprocess_frames_worker)
+    
+    def preprocess_frames_worker(self):
+        """预处理帧的工作线程"""
+        try:
+            import time
+            
+            # 计算需要预处理的帧范围
+            start_idx = max(0, self.current_frame_index - 5)
+            end_idx = min(len(self.frames), self.current_frame_index + 30)
+            
+            self.add_log(f"预处理帧范围: {start_idx} - {end_idx}")
+            
+            # 预处理帧
+            for i in range(start_idx, end_idx):
+                # 如果已经处理过，跳过
+                if i in self.processed_frames_cache:
+                    continue
+                    
+                # 处理帧
+                frame = self.frames[i]
+                processed_frame, frame_info = self.process_frame_with_yolo(frame, i)
+                
+                # 缓存处理结果
+                self.processed_frames_cache[i] = (processed_frame, frame_info)
+                
+                # 如果队列已满，等待
+                while self.frame_queue.full():
+                    time.sleep(0.01)
+                    
+                # 将处理结果放入队列
+                self.frame_queue.put((i, processed_frame, frame_info))
+                
+            self.add_log(f"预处理完成，共处理 {end_idx - start_idx} 帧")
+            
+        except Exception as e:
+            self.add_log(f"预处理帧出错: {str(e)}")
+        finally:
+            self.is_preprocessing = False
+    
+    def get_processed_frame(self, frame_index):
+        """获取处理后的帧
+        
+        如果帧已经预处理，则直接从缓存获取
+        否则实时处理
+        
+        Args:
+            frame_index: 帧索引
+            
+        Returns:
+            processed_frame: 处理后的帧
+            frame_info: 帧信息
+        """
+        # 如果帧已经预处理，从缓存获取
+        if frame_index in self.processed_frames_cache:
+            return self.processed_frames_cache[frame_index]
+            
+        # 否则实时处理
+        frame = self.frames[frame_index]
+        return self.process_frame_with_yolo(frame, frame_index)
