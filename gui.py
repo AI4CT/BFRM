@@ -313,8 +313,8 @@ class MainWindow(QMainWindow):
         toolbar.addWidget(replay_btn)
         
         # 暂停/开始按钮
-        self.play_pause_btn = QPushButton('暂停', self)
-        self.play_pause_btn.setIcon(QIcon("icons/pause.png"))
+        self.play_pause_btn = QPushButton('播放', self)
+        self.play_pause_btn.setIcon(QIcon("icons/play.png"))
         self.play_pause_btn.clicked.connect(self.toggle_play_pause)
         toolbar.addWidget(self.play_pause_btn)
         
@@ -1552,6 +1552,11 @@ class MainWindow(QMainWindow):
         self.frame_timer.stop()
         self.is_playing = False
         
+        # 更新播放/暂停按钮
+        if hasattr(self, 'play_pause_btn'):
+            self.play_pause_btn.setText('播放')
+            self.play_pause_btn.setIcon(QIcon("icons/play.png"))
+        
         self.add_log("暂停视频播放")
     
     def stop_playback(self):
@@ -1826,11 +1831,23 @@ class MainWindow(QMainWindow):
                     if bubble_id not in self.trajectories:
                         self.trajectories[bubble_id] = []
                     self.trajectories[bubble_id].append(center)
-                    if len(self.trajectories[bubble_id]) > 100:
+                    if len(self.trajectories[bubble_id]) > 50:  # 改为保留50帧
                         self.trajectories[bubble_id].pop(0)
                     
+                    # 计算速度
+                    speed = 0
+                    if len(self.trajectories[bubble_id]) >= 2:
+                        speed = np.linalg.norm(
+                            np.array(self.trajectories[bubble_id][-1]) - 
+                            np.array(self.trajectories[bubble_id][-2])
+                        ) * 0.080128 * 0.001 / 0.00001
+                    
+                    # 根据速度设置颜色 - 速度越快颜色越红，越慢颜色越蓝
+                    # 将速度映射到0-255的范围
+                    speed_normalized = min(255, int(speed * 5))  # 调整系数以适应速度范围
+                    color = (0, 255 - speed_normalized, speed_normalized)  # BGR: 蓝到红
+                    
                     # 绘制轨迹
-                    color = (0, 0, 192) if r.obb.cls[i] else (53, 130, 84)
                     for j in range(1, len(self.trajectories[bubble_id])):
                         start_point = tuple(map(int, self.trajectories[bubble_id][j-1]))
                         end_point = tuple(map(int, self.trajectories[bubble_id][j]))
@@ -1842,14 +1859,6 @@ class MainWindow(QMainWindow):
                     # 计算气泡信息
                     w, h = rbox[2], rbox[3]
                     angle = rbox[4] * 180 / np.pi
-                    
-                    # 计算速度
-                    speed = 0
-                    if len(self.trajectories[bubble_id]) >= 2:
-                        speed = np.linalg.norm(
-                            np.array(self.trajectories[bubble_id][-1]) - 
-                            np.array(self.trajectories[bubble_id][-2])
-                        ) * 0.080128 * 0.001 / 0.00001
                     
                     # 计算体积
                     volume = (w * w * h * 0.080128 ** 3)
