@@ -2045,6 +2045,9 @@ class MainWindow(QMainWindow):
                     # 计算体积
                     volume = (w * w * h * 0.080128 ** 3)
                     
+                    # 获取类别信息
+                    class_id = int(r.obb.cls[i])
+                    
                     # 存储气泡信息
                     frame_info[bubble_id] = {
                         'id': bubble_id,
@@ -2054,12 +2057,13 @@ class MainWindow(QMainWindow):
                         'height': h,
                         'angle': angle,
                         'speed': speed,
-                        'volume': volume
+                        'volume': volume,
+                        'class_id': class_id
                     }
                     
                     # 绘制检测框
                     # base_color = self.trajectory_colors.get(bubble_id, (0, 0, 192))
-                    base_color = (0, 0, 192) if r.obb.cls[i] else (53, 130, 84)
+                    base_color = (0, 0, 192) if class_id else (53, 130, 84)
                     cv2.polylines(processed_frame, [np.asarray(box, dtype=int)], True, base_color, lw)
             
             # 检查哪些气泡在当前帧中消失了
@@ -2315,10 +2319,13 @@ class MainWindow(QMainWindow):
                 writer = csv.writer(f)
                 
                 # 写入表头
-                writer.writerow(['气泡ID', 'X坐标', 'Y坐标', '宽度', '高度', '角度', '速度(m/s)', '体积'])
+                writer.writerow(['气泡ID', 'X坐标', 'Y坐标', '宽度', '高度', '角度', '速度(m/s)', '体积', '类别'])
                 
                 # 写入每个气泡的信息
                 for bubble_id, info in frame_info.items():
+                    # 确定类别名称
+                    class_name = "single" if info.get('class_id', 0) == 0 else "overlap"
+                    
                     writer.writerow([
                         info['id'],
                         f"{info['x']:.2f}",
@@ -2327,7 +2334,8 @@ class MainWindow(QMainWindow):
                         f"{info['height']:.2f}",
                         f"{info['angle']:.2f}",
                         f"{info['speed']:.4f}",
-                        f"{info['volume']:.4f}"
+                        f"{info['volume']:.4f}",
+                        class_name
                     ])
                     
             self.add_log(f"已保存帧 {frame_index} 的气泡信息到 {csv_file}")
