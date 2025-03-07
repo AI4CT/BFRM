@@ -1,5 +1,16 @@
 import os
+import sys
 import time
+import cv2
+import numpy as np
+import datetime
+import threading
+import queue
+import re
+import csv  # 添加CSV模块导入
+from collections import deque, defaultdict
+import concurrent.futures
+import shutil
 from PyQt6.QtWidgets import (QMainWindow, QFileDialog, QPushButton, QLabel, 
                             QVBoxLayout, QWidget, QHBoxLayout, QProgressBar, 
                             QMessageBox, QMenuBar, QMenu, QStatusBar,
@@ -9,15 +20,192 @@ from PyQt6.QtWidgets import (QMainWindow, QFileDialog, QPushButton, QLabel,
 from PyQt6.QtCore import QTimer, Qt
 from PyQt6.QtGui import (QMovie, QPalette, QColor, QFont, QPixmap, QImage, 
                         QIcon, QAction, QActionGroup)
-import cv2
 import imageio
-import numpy as np
 
 from image_processor import process_images
 from video_processor import process_video, get_video_info
 from animation_exporter import export_animation
 from ellipse_fitting import draw_ellipse_on_image, draw_bounding_box_on_image, draw_rotated_rectangle
 from reconstruction3d import reconstruct_3d
+
+# 新增气泡信息窗口类
+class BubbleInfoWindow(QMainWindow):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        
+        # 设置窗口标题和图标
+        self.setWindowTitle("气泡信息详情")
+        self.setWindowIcon(QIcon("bubble.ico"))
+        
+        # 设置窗口大小
+        self.resize(800, 600)
+        
+        # 创建中央部件
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+        
+        # 创建主布局
+        main_layout = QVBoxLayout(central_widget)
+        main_layout.setContentsMargins(10, 10, 10, 10)
+        main_layout.setSpacing(15)
+        
+        # 创建气泡信息显示组
+        bubble_info_group = QGroupBox("气泡信息")
+        bubble_info_layout = QVBoxLayout(bubble_info_group)
+        
+        # 创建滚动区域
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setStyleSheet("""
+            QScrollArea {
+                border: none;
+                background: transparent;
+            }
+            QScrollBar:vertical {
+                border: none;
+                background: #f0f0f0;
+                width: 10px;
+                margin: 0px;
+            }
+            QScrollBar::handle:vertical {
+                background: #c0c0c0;
+                min-height: 30px;
+                border-radius: 5px;
+            }
+            QScrollBar::handle:vertical:hover {
+                background: #a0a0a0;
+            }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+                height: 0px;
+            }
+        """)
+        
+        # 创建内容容器
+        content_widget = QWidget()
+        content_layout = QVBoxLayout(content_widget)
+        
+        # 创建气泡信息标签
+        self.info_label = QLabel()
+        self.info_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        self.info_label.setStyleSheet("""
+            QLabel {
+                background-color: white;
+                border: 1px solid #cccccc;
+                border-radius: 4px;
+                padding: 10px;
+                font-family: Arial, sans-serif;
+                font-size: 14px;
+            }
+        """)
+        content_layout.addWidget(self.info_label)
+        
+        # 将内容容器添加到滚动区域
+        scroll_area.setWidget(content_widget)
+        bubble_info_layout.addWidget(scroll_area)
+        
+        # 添加组到主布局
+        main_layout.addWidget(bubble_info_group)
+        
+        # 创建状态栏
+        self.statusbar = self.statusBar()
+        self.statusbar.showMessage("气泡信息窗口就绪")
+        
+        # 初始化信息
+        self.info_label.setText("<p style='text-align:center; margin-top:20px;'>等待气泡数据...</p>")
+    
+    def update_bubble_info(self, frame_info):
+        """更新气泡信息显示
+        
+        Args:
+            frame_info: 当前帧的气泡信息字典
+        """
+        if not frame_info:
+            self.info_label.setText("<p style='text-align:center; margin-top:20px;'>当前帧没有检测到气泡</p>")
+            self.statusbar.showMessage("当前帧没有检测到气泡")
+            return
+            
+        # 创建HTML表格
+        table_html = f"""
+        <style>
+            .container {{
+                font-family: Arial, sans-serif;
+                margin: 0;
+                padding: 0;
+                width: 100%;
+            }}
+            .header {{
+                background-color: #f0f8ff;
+                padding: 8px;
+                margin-bottom: 10px;
+                border-radius: 4px;
+                font-weight: bold;
+                text-align: center;
+            }}
+            table {{
+                width: 100%;
+                border-collapse: collapse;
+                margin-top: 5px;
+            }}
+            th {{
+                background-color: #4CAF50;
+                color: white;
+                text-align: center;
+                font-weight: bold;
+                padding: 8px 4px;
+                position: sticky;
+                top: 0;
+            }}
+            td {{
+                padding: 6px 4px;
+                border-bottom: 1px solid #ddd;
+            }}
+            tr:nth-child(even) {{
+                background-color: #f8f8f8;
+            }}
+            tr:hover {{
+                background-color: #f0f0f0;
+            }}
+        </style>
+        <div class='container'>
+            <div class='header'>
+                当前检测到 {len(frame_info)} 个气泡
+            </div>
+            <table>
+                <tr>
+                    <th>序号</th>
+                    <th>气泡ID</th>
+                    <th>位置(x,y)</th>
+                    <th>尺寸(w×h)</th>
+                    <th>角度(°)</th>
+                    <th>速度(m/s)</th>
+                    <th>体积(mm³)</th>
+                </tr>
+        """
+        
+        # 按气泡ID排序
+        sorted_bubbles = sorted(frame_info.items(), key=lambda x: x[0])
+        
+        # 添加行号
+        for row_num, (bubble_id, info) in enumerate(sorted_bubbles, 1):
+            table_html += f"""
+                <tr>
+                    <td>{row_num}</td>
+                    <td>{info['id']}</td>
+                    <td>({info['x']:.1f}, {info['y']:.1f})</td>
+                    <td>{info['width']:.1f}×{info['height']:.1f}</td>
+                    <td>{info['angle']:.1f}</td>
+                    <td>{info['speed']:.2f}</td>
+                    <td>{info['volume']:.2f}</td>
+                </tr>
+            """
+            
+        table_html += """
+            </table>
+        </div>
+        """
+        
+        self.info_label.setText(table_html)
+        self.statusbar.showMessage(f"已更新气泡信息: 检测到 {len(frame_info)} 个气泡")
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -40,6 +228,9 @@ class MainWindow(QMainWindow):
         self.is_video_mode = False  # 是否为视频模式
         self.frame_info_dict = {}  # 帧信息字典
         self.trajectories = {}  # 气泡轨迹
+        self.inactive_trajectories = {}  # 失去追踪的气泡轨迹
+        self.last_seen_frame = {}  # 气泡最后一次出现的帧索引
+        self.trajectory_colors = {}  # 气泡轨迹颜色
         self.model = None  # YOLO模型
         self.device = 'cpu'  # 默认设备
         self.log_history = []  # 日志历史
@@ -48,6 +239,9 @@ class MainWindow(QMainWindow):
         self.content_labels = {}  # 内容标签字典
         self.default_folder = "."  # 默认文件夹为当前目录
         self.movies = {}  # 动画字典
+        
+        # 创建气泡信息窗口（初始不显示）
+        self.bubble_info_window = BubbleInfoWindow(self)
         
         # 初始化处理缓存
         self.processed_frames_cache = {}  # 处理后的帧缓存
@@ -68,6 +262,14 @@ class MainWindow(QMainWindow):
         timestamp = time.strftime("%Y%m%d_%H%M%S")
         folder = os.path.join(self.result_root, timestamp)
         os.makedirs(folder, exist_ok=True)
+        
+        # 创建CSV子文件夹
+        csv_folder = os.path.join(folder, "bubble_csv")
+        os.makedirs(csv_folder, exist_ok=True)
+        
+        # 设置当前结果文件夹
+        self.result_folder = folder
+        
         return folder
     def init_ui(self):
         """初始化UI界面"""
@@ -249,100 +451,92 @@ class MainWindow(QMainWindow):
     def add_video_controls(self, toolbar):
         """添加视频控制按钮到工具栏"""
         # 选择视频按钮
-        select_video_btn = QPushButton('选择视频', self)
-        select_video_btn.setIcon(QIcon("icons/video.png"))
-        select_video_btn.clicked.connect(self.select_video)
-        toolbar.addWidget(select_video_btn)
+        select_video_action = QAction(QIcon("icons/open.png"), "选择视频", self)
+        select_video_action.triggered.connect(self.select_video)
+        toolbar.addAction(select_video_action)
         
-        # 重新加载按钮(原处理按钮)
-        reload_btn = QPushButton('重新加载', self)
-        reload_btn.setIcon(QIcon("icons/reload.png"))
-        reload_btn.clicked.connect(self.select_video)
-        toolbar.addWidget(reload_btn)
-        
-        # 导出视频按钮
-        export_btn = QPushButton('导出视频', self)
-        export_btn.setIcon(QIcon("icons/export.png"))
-        export_btn.clicked.connect(self.export_video)
-        export_btn.setEnabled(False)  # 初始禁用
-        self.export_btn = export_btn  # 保存引用以便后续启用
-        toolbar.addWidget(export_btn)
-        
-        # 添加分隔符
+        # 添加分隔线
         toolbar.addSeparator()
         
-        # 播放速度控制
-        speed_menu = QMenu()
-        speeds = ['0.25x', '0.5x', '1.0x', '1.5x', '2.0x', '4.0x']
-        self.speed_actions = {}
+        # 播放/暂停按钮
+        self.play_pause_action = QAction(QIcon("icons/play.png"), "播放", self)
+        self.play_pause_action.triggered.connect(self.toggle_play_pause)
+        toolbar.addAction(self.play_pause_action)
         
-        for speed in speeds:
-            action = QAction(speed, self)
-            action.setCheckable(True)
-            if speed == '1.0x':
-                action.setChecked(True)
-            # 添加快捷键
-            if speed == '1.0x':
-                action.setShortcut('Ctrl+1')
-            elif speed == '2.0x':
-                action.setShortcut('Ctrl+2')
-            elif speed == '4.0x':
-                action.setShortcut('Ctrl+4')
-            elif speed == '0.5x':
-                action.setShortcut('Ctrl+5')
-            action.triggered.connect(lambda checked, s=speed: self.change_playback_speed(action=s))
-            speed_menu.addAction(action)
-            self.speed_actions[speed] = action
+        # 停止按钮
+        stop_action = QAction(QIcon("icons/stop.png"), "停止", self)
+        stop_action.triggered.connect(self.stop_playback)
+        toolbar.addAction(stop_action)
         
-        speed_btn = QPushButton('速度: 1.0x', self)
-        speed_btn.setIcon(QIcon("icons/speed.png"))  # 添加速度图标
-        speed_btn.setMenu(speed_menu)
-        self.speed_btn = speed_btn  # 保存引用以便后续更新
-        toolbar.addWidget(speed_btn)
+        # 添加分隔线
+        toolbar.addSeparator()
         
-        # 重复播放复选框
-        self.loop_checkbox = QCheckBox('循环播放', self)
-        self.loop_checkbox.setChecked(True)
-        self.loop_checkbox.clicked.connect(self.toggle_loop)
+        # 循环播放复选框
+        self.loop_checkbox = QCheckBox("循环播放")
+        self.loop_checkbox.setChecked(False)
+        self.loop_checkbox.stateChanged.connect(self.toggle_loop)
         toolbar.addWidget(self.loop_checkbox)
         
-        # 重新播放按钮
-        replay_btn = QPushButton('重新播放', self)
-        replay_btn.setIcon(QIcon("icons/replay.png"))
-        replay_btn.clicked.connect(self.replay_animations)
-        toolbar.addWidget(replay_btn)
-        
-        # 暂停/开始按钮
-        self.play_pause_btn = QPushButton('播放', self)
-        self.play_pause_btn.setIcon(QIcon("icons/play.png"))
-        self.play_pause_btn.clicked.connect(self.toggle_play_pause)
-        toolbar.addWidget(self.play_pause_btn)
-        
-        # 添加分隔符
+        # 添加分隔线
         toolbar.addSeparator()
         
-        # 帧控制滑动条
-        slider_container = QWidget()
-        slider_layout = QHBoxLayout(slider_container)
-        slider_layout.setContentsMargins(5, 0, 5, 0)
+        # 播放速度菜单
+        speed_menu = QMenu("播放速度", self)
         
-        # 创建帧滑动条
+        # 创建播放速度选项
+        speed_action_group = QActionGroup(self)
+        speed_action_group.setExclusive(True)
+        
+        speeds = [0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 4.0]
+        self.speed_actions = {}  # 保存速度动作引用
+        
+        for speed in speeds:
+            action = QAction(f"{speed}x", self, checkable=True)
+            action.triggered.connect(lambda checked, s=speed: self.change_playback_speed(s))
+            speed_action_group.addAction(action)
+            speed_menu.addAction(action)
+            self.speed_actions[speed] = action  # 保存引用
+            if speed == 1.0:
+                action.setChecked(True)
+        
+        # 添加播放速度按钮
+        self.speed_button = QPushButton("1.0x")
+        self.speed_button.setMenu(speed_menu)
+        toolbar.addWidget(self.speed_button)
+        
+        # 添加分隔线
+        toolbar.addSeparator()
+        
+        # 导出视频按钮
+        export_action = QAction(QIcon("icons/export.png"), "导出视频", self)
+        export_action.triggered.connect(self.export_video)
+        toolbar.addAction(export_action)
+        
+        # 添加分隔线
+        toolbar.addSeparator()
+        
+        # 气泡信息按钮
+        bubble_info_action = QAction(QIcon("icons/info.png"), "气泡信息", self)
+        bubble_info_action.triggered.connect(self.show_bubble_info_window)
+        toolbar.addAction(bubble_info_action)
+        
+        # 添加帧滑动条
         self.frame_slider = QSlider(Qt.Orientation.Horizontal)
         self.frame_slider.setMinimum(0)
-        self.frame_slider.setMaximum(100)  # 默认最大值，会在加载视频后更新
+        self.frame_slider.setMaximum(0)
         self.frame_slider.setValue(0)
-        self.frame_slider.setEnabled(False)  # 默认禁用
+        self.frame_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
+        self.frame_slider.setTickInterval(10)
         self.frame_slider.valueChanged.connect(self.frame_slider_changed)
-        slider_layout.addWidget(self.frame_slider)
         
-        # 帧数显示标签
-        self.frame_number_label = QLabel("0/0")
-        self.frame_number_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.frame_number_label.setMinimumWidth(80)
-        slider_layout.addWidget(self.frame_number_label)
+        # 添加帧计数标签
+        self.frame_counter_label = QLabel("0/0")
+        self.frame_counter_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.frame_counter_label.setMinimumWidth(80)
         
-        # 添加滑动条到工具栏
-        toolbar.addWidget(slider_container)
+        # 将滑动条和标签添加到工具栏
+        toolbar.addWidget(self.frame_slider)
+        toolbar.addWidget(self.frame_counter_label)
     def change_title_font_size(self, action):
         """更改标题字体大小"""
         size_map = {
@@ -971,67 +1165,17 @@ class MainWindow(QMainWindow):
         """更新界面显示"""
         try:
             self.statusbar.showMessage("正在更新界面显示...")
-            self.add_log("更新界面显示")
             
-            # 显示当前帧或第一帧（如果没有当前帧）
-            if self.frames and len(self.frames) > 0:
-                # 确保帧滑动条正确设置
-                self.frame_slider.setMaximum(len(self.frames) - 1)
-                
-                # 保存当前播放状态
-                was_playing = self.is_playing
-                current_frame = self.current_frame_index
-                
-                # 仅当帧索引无效时初始化为0，否则保持当前位置
-                if current_frame < 0 or current_frame >= len(self.frames):
-                    self.current_frame_index = 0
-                    self.frame_slider.setValue(0)
-                    self.update_display(0)
-                else:
-                    # 保持当前帧索引
-                    self.frame_slider.setValue(current_frame)
-                    self.update_display(current_frame)
-                
-                self.frame_slider.setEnabled(True)
-                
-                # 更新帧数标签
-                self.frame_number_label.setText(f"{self.current_frame_index + 1}/{len(self.frames)}")
-                
-                # 如果之前在播放，确保继续播放
-                if was_playing and not self.is_playing:
-                    self.is_playing = True
-                    interval = int(1000 / (self.video_fps * self.playback_speed))
-                    self.frame_timer.start(interval)
+            # 更新气泡信息窗口（如果可见）
+            if self.bubble_info_window.isVisible() and self.current_frame_index in self.frame_info_dict:
+                self.bubble_info_window.update_bubble_info(self.frame_info_dict[self.current_frame_index])
             
-            # 更新信息标签 - 显示处理摘要
-            summary_text = "<div style='font-family: monospace;'>"
-            summary_text += f"<b>处理摘要</b><br>"
-            
+            # 更新状态栏信息
             if self.is_video_mode:
-                summary_text += f"视频文件: {os.path.basename(self.video_file)}<br>"
-                summary_text += f"帧数: {len(self.frames)}<br>"
-                summary_text += f"帧率: {self.video_fps} FPS<br>"
+                self.statusbar.showMessage(f"视频: {os.path.basename(self.video_file)} | 帧: {self.current_frame_index + 1}/{len(self.frames)} | 速度: {self.playback_speed}x")
             else:
-                summary_text += f"图像文件夹: {os.path.basename(self.data_folder)}<br>"
-                summary_text += f"图像数量: {len(self.frames)}<br>"
-                summary_text += f"CSV文件: {os.path.basename(self.csv_file)}<br>"
+                self.statusbar.showMessage(f"图像文件夹: {os.path.basename(self.data_folder)} | 图像: {self.current_frame_index + 1}/{len(self.frames)}")
             
-            # 添加气泡统计信息
-            total_bubbles = sum(len(info.get('bubbles', [])) for info in self.frame_info_dict.values())
-            if self.frame_info_dict:
-                avg_bubbles = total_bubbles / len(self.frame_info_dict)
-                summary_text += f"检测到气泡: {total_bubbles} 个<br>"
-                summary_text += f"平均每帧: {avg_bubbles:.1f} 个气泡<br>"
-            
-            # 添加输出信息
-            summary_text += f"输出文件夹: {os.path.basename(self.output_folder)}<br>"
-            
-            summary_text += "</div>"
-            
-            # 更新信息标签
-            self.info_label.setText(summary_text)
-            
-            self.statusbar.showMessage("界面显示更新完成")
             return True
             
         except Exception as e:
@@ -1060,65 +1204,32 @@ class MainWindow(QMainWindow):
         traceback.print_exc()
 
     def create_info_panel(self):
-        """创建信息面板，包括气泡信息显示和日志显示"""
+        """创建信息面板，包括日志显示和气泡信息按钮"""
         info_panel = QWidget()
         info_layout = QVBoxLayout(info_panel)
         info_layout.setContentsMargins(10, 10, 10, 10)
         info_layout.setSpacing(15)
         
-        # 创建气泡信息显示组
-        bubble_info_group = QGroupBox("气泡信息")
-        bubble_info_layout = QVBoxLayout(bubble_info_group)
-        
-        # 创建滚动区域
-        scroll_area = QScrollArea()
-        scroll_area.setWidgetResizable(True)
-        scroll_area.setStyleSheet("""
-            QScrollArea {
+        # 创建气泡信息按钮
+        bubble_info_button = QPushButton("查看气泡信息")
+        bubble_info_button.setStyleSheet("""
+            QPushButton {
+                background-color: #4CAF50;
+                color: white;
                 border: none;
-                background: transparent;
-            }
-            QScrollBar:vertical {
-                border: none;
-                background: #f0f0f0;
-                width: 10px;
-                margin: 0px;
-            }
-            QScrollBar::handle:vertical {
-                background: #c0c0c0;
-                min-height: 30px;
-                border-radius: 5px;
-            }
-            QScrollBar::handle:vertical:hover {
-                background: #a0a0a0;
-            }
-            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
-                height: 0px;
-            }
-        """)
-        
-        # 创建内容容器
-        content_widget = QWidget()
-        content_layout = QVBoxLayout(content_widget)
-        
-        # 创建气泡信息标签
-        self.info_label = QLabel()
-        self.info_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-        self.info_label.setStyleSheet("""
-            QLabel {
-                background-color: white;
-                border: 1px solid #cccccc;
-                border-radius: 4px;
                 padding: 10px;
-                font-family: Arial, sans-serif;
-                font-size: 14px;
+                border-radius: 4px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #45a049;
+            }
+            QPushButton:pressed {
+                background-color: #3d8b40;
             }
         """)
-        content_layout.addWidget(self.info_label)
-        
-        # 将内容容器添加到滚动区域
-        scroll_area.setWidget(content_widget)
-        bubble_info_layout.addWidget(scroll_area)
+        bubble_info_button.clicked.connect(self.show_bubble_info_window)
+        info_layout.addWidget(bubble_info_button)
         
         # 创建日志组
         log_group = QGroupBox("日志")
@@ -1139,14 +1250,24 @@ class MainWindow(QMainWindow):
         log_layout.addWidget(self.log_label)
         
         # 设置组件大小策略
-        bubble_info_group.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        log_group.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        log_group.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         
         # 添加组到面板
-        info_layout.addWidget(bubble_info_group)
         info_layout.addWidget(log_group)
         
         return info_panel
+        
+    def show_bubble_info_window(self):
+        """显示气泡信息窗口"""
+        # 如果有当前帧的气泡信息，则更新窗口
+        if self.current_frame_index in self.frame_info_dict:
+            frame_info = self.frame_info_dict[self.current_frame_index]
+            self.bubble_info_window.update_bubble_info(frame_info)
+        
+        # 显示窗口
+        self.bubble_info_window.show()
+        self.bubble_info_window.raise_()  # 确保窗口在最前面
+        self.add_log("已打开气泡信息窗口")
         
     def add_log(self, message):
         """添加日志消息"""
@@ -1177,59 +1298,42 @@ class MainWindow(QMainWindow):
         <p>制作人: 于宝地</p>
         """
         QMessageBox.about(self, "关于气泡流重建模型", about_text)
-    def change_playback_speed(self, action):
+    def change_playback_speed(self, speed):
         """更改播放速度
         
         Args:
-            action: 触发的动作对象或速度字符串
+            speed: 播放速度值（浮点数）
         """
-        # 从动作获取速度值
-        if isinstance(action, str):
-            speed_text = action
-        else:
-            speed_text = action.text()
+        # 保存旧的播放状态
+        was_playing = self.is_playing
         
-        # 移除"x"后缀并转换为浮点数
-        speed_value = float(speed_text.replace('x', ''))
-        self.playback_speed = speed_value
-        
-        # 更新工具栏按钮文本
-        if hasattr(self, 'speed_btn'):
-            self.speed_btn.setText(f'速度: {speed_text}')
-        
-        # 更新菜单项选中状态
-        if hasattr(self, 'speed_actions'):
-            for speed, act in self.speed_actions.items():
-                act.setChecked(speed == speed_text)
-        
-        # 如果是视频模式且正在播放，需要更新定时器
-        if self.is_video_mode and self.is_playing:
+        # 如果正在播放，先暂停
+        if self.is_playing:
             self.frame_timer.stop()
+        
+        # 更新播放速度
+        self.playback_speed = speed
+        
+        # 更新速度按钮文本
+        if hasattr(self, 'speed_button'):
+            self.speed_button.setText(f"{speed}x")
+        
+        # 更新速度动作选中状态
+        if hasattr(self, 'speed_actions'):
+            for s, action in self.speed_actions.items():
+                action.setChecked(s == speed)
+        
+        # 更新状态栏消息
+        self.statusbar.showMessage(f"播放速度已设置为 {speed}x")
+        
+        # 如果之前在播放，重新启动计时器以应用新速度
+        if was_playing:
+            # 计算新的帧间隔时间（毫秒）
             interval = int(1000 / (self.video_fps * self.playback_speed))
             self.frame_timer.start(interval)
         
-        # 更新所有动画的播放速度
-        for movie in self.movies.values():
-            if movie and movie.isValid():
-                movie.setSpeed(int(100 * self.playback_speed))
-        
-        # 更新状态栏显示当前播放速度
-        current_status = self.statusbar.currentMessage()
-        if "播放速度" in current_status:
-            # 如果状态栏已经显示播放速度信息，则更新它
-            parts = current_status.split("播放速度:")
-            if len(parts) > 1:
-                new_status = f"{parts[0]}播放速度: {speed_text}"
-                self.statusbar.showMessage(new_status)
-        else:
-            # 如果没有显示，则添加播放速度信息
-            self.statusbar.showMessage(f"{current_status} | 播放速度: {speed_text}")
-        
-        self.add_log(f"播放速度已更改为: {self.playback_speed}x")
-        
-        # 如果有信息显示标签，更新播放速度信息
-        self.update_display(self.current_frame_index)
-
+        # 添加日志
+        self.add_log(f"播放速度已更改为: {speed}x")
     def change_layout(self, action):
         """更改窗口布局
         
@@ -1400,8 +1504,8 @@ class MainWindow(QMainWindow):
         self.current_frame_index = frame_index
         
         # 更新帧数标签
-        if hasattr(self, 'frame_number_label'):
-            self.frame_number_label.setText(f"{frame_index + 1}/{len(self.frames)}")
+        if hasattr(self, 'frame_counter_label'):
+            self.frame_counter_label.setText(f"{frame_index + 1}/{len(self.frames)}")
         
         # 如果没有帧，直接返回
         if not self.frames or frame_index >= len(self.frames):
@@ -1539,10 +1643,15 @@ class MainWindow(QMainWindow):
             self.play_pause_btn.setText('暂停')
             self.play_pause_btn.setIcon(QIcon("icons/pause.png"))
         
+        # 更新播放/暂停动作
+        if hasattr(self, 'play_pause_action'):
+            self.play_pause_action.setText('暂停')
+            self.play_pause_action.setIcon(QIcon("icons/pause.png"))
+        
         # 启动预处理线程
         self.start_frame_preprocessing()
         
-        self.add_log("开始播放视频")
+        self.add_log(f"开始播放视频，速度: {self.playback_speed}x，帧间隔: {interval}ms")
     
     def pause_playback(self):
         """暂停播放视频"""
@@ -1556,6 +1665,11 @@ class MainWindow(QMainWindow):
         if hasattr(self, 'play_pause_btn'):
             self.play_pause_btn.setText('播放')
             self.play_pause_btn.setIcon(QIcon("icons/play.png"))
+        
+        # 更新播放/暂停动作
+        if hasattr(self, 'play_pause_action'):
+            self.play_pause_action.setText('播放')
+            self.play_pause_action.setIcon(QIcon("icons/play.png"))
         
         self.add_log("暂停视频播放")
     
@@ -1611,11 +1725,19 @@ class MainWindow(QMainWindow):
         if self.is_playing:
             self.pause_playback()
         
+        # 清空气泡轨迹数据，避免轨迹混乱
+        self.trajectories = {}
+        self.inactive_trajectories = {}
+        self.last_seen_frame = {}
+        
         # 更新当前帧索引
         self.current_frame_index = value
         
         # 更新显示
         self.update_display(value)
+        
+        # 添加日志
+        self.add_log(f"跳转到帧: {value + 1}/{len(self.frames)}")
 
     def toggle_loop(self):
         """切换循环播放设置"""
@@ -1623,7 +1745,7 @@ class MainWindow(QMainWindow):
         self.add_log(f"循环播放: {'开启' if is_loop else '关闭'}")
         
     def export_video(self):
-        """导出处理后的视频"""
+        """导出处理后的视频（带有轨迹的检测结果）"""
         # 检查是否有可用的帧
         if not self.frames or len(self.frames) == 0:
             self.statusbar.showMessage("没有可用的视频帧")
@@ -1631,7 +1753,7 @@ class MainWindow(QMainWindow):
             return
             
         # 选择保存位置
-        suggested_name = "processed_video.mp4" if self.is_video_mode else "animated_sequence.mp4"
+        suggested_name = "detection_with_tracks.mp4" if self.is_video_mode else "animated_sequence.mp4"
         file_path, _ = QFileDialog.getSaveFileName(
             self,
             "导出视频",
@@ -1641,11 +1763,19 @@ class MainWindow(QMainWindow):
         
         if not file_path:
             return
-            
+        
+        # 暂停当前播放
+        was_playing = self.is_playing
+        if was_playing:
+            self.pause_playback()
+        
+        # 保存当前状态信息
+        original_frame_index = self.current_frame_index
+        
         try:
             self.statusbar.showMessage("正在导出视频...")
             self.progress_bar.setValue(0)
-            self.add_log(f"开始导出视频到: {file_path}")
+            self.add_log(f"开始导出检测结果视频到: {file_path}")
             
             # 获取第一帧尺寸
             height, width = self.frames[0].shape[:2]
@@ -1654,15 +1784,37 @@ class MainWindow(QMainWindow):
             fourcc = cv2.VideoWriter_fourcc(*'mp4v')
             out = cv2.VideoWriter(file_path, fourcc, self.video_fps, (width, height))
             
+            # 临时保存当前界面状态
+            self.setEnabled(False)  # 禁用界面交互
+            
+            # 完全重置所有轨迹信息
+            temp_trajectories = self.trajectories.copy()
+            temp_inactive_trajectories = self.inactive_trajectories.copy()
+            temp_last_seen_frame = self.last_seen_frame.copy()
+            temp_trajectory_colors = self.trajectory_colors.copy()
+            
+            # 清空轨迹数据，重新开始
+            self.trajectories = {}
+            self.inactive_trajectories = {}
+            self.last_seen_frame = {}
+            self.trajectory_colors = {}
+            
+            # 临时清空缓存的处理帧
+            temp_processed_frames_cache = self.processed_frames_cache.copy()
+            self.processed_frames_cache = {}
+            
             # 写入每一帧
             total_frames = len(self.frames)
-            for i, frame in enumerate(self.frames):
+            for i in range(total_frames):
                 # 计算进度
                 progress = int((i + 1) / total_frames * 100)
                 self.progress_bar.setValue(progress)
                 
-                # 写入帧
-                out.write(frame)
+                # 处理帧（从第一帧开始完全重新处理）
+                processed_frame, _ = self.process_frame_with_yolo(self.frames[i], i)
+                
+                # 写入处理后的帧
+                out.write(processed_frame)
                 
                 # 每10帧更新一次状态
                 if (i + 1) % 10 == 0 or i == total_frames - 1:
@@ -1672,15 +1824,29 @@ class MainWindow(QMainWindow):
             # 释放资源
             out.release()
             
+            # 恢复原始状态
+            self.trajectories = temp_trajectories
+            self.inactive_trajectories = temp_inactive_trajectories
+            self.last_seen_frame = temp_last_seen_frame
+            self.trajectory_colors = temp_trajectory_colors
+            self.processed_frames_cache = temp_processed_frames_cache
+            
+            # 恢复原始帧索引
+            self.current_frame_index = original_frame_index
+            self.update_display(self.current_frame_index)
+            
+            # 重新启用界面
+            self.setEnabled(True)
+            
             self.statusbar.showMessage(f"视频导出完成: {file_path}")
             self.progress_bar.setValue(100)
-            self.add_log(f"视频导出完成: {file_path}")
+            self.add_log(f"检测结果视频导出完成: {file_path}")
             
             # 询问是否打开视频
             reply = QMessageBox.question(
                 self,
                 "导出完成",
-                f"视频已成功导出到: {file_path}\n\n是否打开视频？",
+                f"检测结果视频已成功导出到: {file_path}\n\n是否打开视频？",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.Yes
             )
@@ -1689,7 +1855,13 @@ class MainWindow(QMainWindow):
                 import webbrowser
                 webbrowser.open(file_path)
             
+            # 如果之前是播放状态，恢复播放
+            if was_playing:
+                self.start_playback()
+                
         except Exception as e:
+            # 恢复界面
+            self.setEnabled(True)
             self.statusbar.showMessage("导出视频失败")
             error_msg = f"导出视频时出错: {str(e)}"
             self.add_log(error_msg)
@@ -1810,6 +1982,9 @@ class MainWindow(QMainWindow):
                 device=self.device
             )
             
+            # 创建当前帧检测到的气泡ID集合
+            current_bubble_ids = set()
+            
             if results and len(results) > 0:
                 r = results[0]  # 获取第一个结果
                 
@@ -1826,23 +2001,20 @@ class MainWindow(QMainWindow):
                     
                     # 获取气泡ID
                     bubble_id = int(r.obb.id[i]) if hasattr(r.obb, 'id') else i
+                    current_bubble_ids.add(bubble_id)
                     
                     # 更新气泡轨迹
                     if bubble_id not in self.trajectories:
                         self.trajectories[bubble_id] = []
-                    self.trajectories[bubble_id].append(center)
+                    
+                    # 添加当前位置到轨迹
+                    self.trajectories[bubble_id].append((center, frame_index))
+                    # 限制轨迹长度
                     if len(self.trajectories[bubble_id]) > 100:
                         self.trajectories[bubble_id].pop(0)
                     
-                    # 绘制轨迹
-                    color = (0, 0, 192) if r.obb.cls[i] else (53, 130, 84)
-                    for j in range(1, len(self.trajectories[bubble_id])):
-                        start_point = tuple(map(int, self.trajectories[bubble_id][j-1]))
-                        end_point = tuple(map(int, self.trajectories[bubble_id][j]))
-                        cv2.line(processed_frame, start_point, end_point, color, 2)
-                    
-                    # 绘制检测框
-                    cv2.polylines(processed_frame, [np.asarray(box, dtype=int)], True, color, lw)
+                    # 更新最后一次出现的帧索引
+                    self.last_seen_frame[bubble_id] = frame_index
                     
                     # 计算气泡信息
                     w, h = rbox[2], rbox[3]
@@ -1852,9 +2024,23 @@ class MainWindow(QMainWindow):
                     speed = 0
                     if len(self.trajectories[bubble_id]) >= 2:
                         speed = np.linalg.norm(
-                            np.array(self.trajectories[bubble_id][-1]) - 
-                            np.array(self.trajectories[bubble_id][-2])
+                            np.array(self.trajectories[bubble_id][-1][0]) - 
+                            np.array(self.trajectories[bubble_id][-2][0])
                         ) * 0.080128 * 0.001 / 0.00001
+                    
+                    # 根据速度确定颜色
+                    if bubble_id not in self.trajectory_colors or len(self.trajectories[bubble_id]) >= 2:
+                        # 将速度映射到1-20 m/s范围内的颜色深浅
+                        speed_normalized = min(max(speed, 1), 20) / 20.0  # 归一化到0-1范围
+                        # 使用HSV颜色空间，保持相同色调，但根据速度调整饱和度和亮度
+                        hue = (bubble_id * 30) % 180  # 色调值，确保不同气泡有不同颜色
+                        saturation = int(155 + 100 * speed_normalized)  # 饱和度随速度增加
+                        value = int(255 - 100 * speed_normalized)  # 亮度随速度减少，使颜色更深
+                        
+                        self.trajectory_colors[bubble_id] = tuple(map(int, cv2.cvtColor(
+                            np.array([[[hue, saturation, value]]], dtype=np.uint8),
+                            cv2.COLOR_HSV2BGR
+                        )[0, 0]))
                     
                     # 计算体积
                     volume = (w * w * h * 0.080128 ** 3)
@@ -1870,6 +2056,37 @@ class MainWindow(QMainWindow):
                         'speed': speed,
                         'volume': volume
                     }
+                    
+                    # 绘制检测框
+                    # base_color = self.trajectory_colors.get(bubble_id, (0, 0, 192))
+                    base_color = (0, 0, 192) if r.obb.cls[i] else (53, 130, 84)
+                    cv2.polylines(processed_frame, [np.asarray(box, dtype=int)], True, base_color, lw)
+            
+            # 检查哪些气泡在当前帧中消失了
+            for bubble_id in list(self.trajectories.keys()):
+                if bubble_id not in current_bubble_ids:
+                    # 如果气泡已经消失超过50帧，则移除其轨迹
+                    if frame_index - self.last_seen_frame.get(bubble_id, 0) > 50:
+                        # 将轨迹移动到非活动轨迹字典中
+                        self.inactive_trajectories[bubble_id] = self.trajectories.pop(bubble_id)
+            
+            # 绘制所有活动轨迹
+            self._draw_trajectories(processed_frame, self.trajectories, frame_index, speed, active=True)
+            
+            # 绘制所有非活动轨迹（最近50帧内消失的气泡）
+            inactive_to_remove = []
+            for bubble_id, trajectory in self.inactive_trajectories.items():
+                if frame_index - self.last_seen_frame.get(bubble_id, 0) <= 50:
+                    self._draw_trajectories(processed_frame, {bubble_id: trajectory}, frame_index, active=False)
+                else:
+                    inactive_to_remove.append(bubble_id)
+            
+            # 移除超过50帧的非活动轨迹
+            for bubble_id in inactive_to_remove:
+                self.inactive_trajectories.pop(bubble_id, None)
+            
+            # 保存当前帧的气泡信息到CSV文件
+            self.save_bubble_info_to_csv(frame_index, frame_info)
             
             return processed_frame, frame_info
             
@@ -1883,94 +2100,13 @@ class MainWindow(QMainWindow):
         Args:
             frame_info: 当前帧的气泡信息字典
         """
-        if not hasattr(self, 'info_label'):
-            return
+        # 如果气泡信息窗口可见，则更新其内容
+        if self.bubble_info_window.isVisible():
+            self.bubble_info_window.update_bubble_info(frame_info)
             
-        if not frame_info:
-            self.info_label.setText("<p style='text-align:center; margin-top:20px;'>当前帧没有检测到气泡</p>")
-            return
-            
-        # 创建HTML表格
-        table_html = f"""
-        <style>
-            .container {{
-                font-family: Arial, sans-serif;
-                margin: 0;
-                padding: 0;
-                width: 100%;
-            }}
-            .header {{
-                background-color: #f0f8ff;
-                padding: 8px;
-                margin-bottom: 10px;
-                border-radius: 4px;
-                font-weight: bold;
-                text-align: center;
-            }}
-            table {{
-                width: 100%;
-                border-collapse: collapse;
-                margin-top: 5px;
-            }}
-            th {{
-                background-color: #4CAF50;
-                color: white;
-                text-align: center;
-                font-weight: bold;
-                padding: 8px 4px;
-                position: sticky;
-                top: 0;
-            }}
-            td {{
-                padding: 6px 4px;
-                border-bottom: 1px solid #ddd;
-            }}
-            tr:nth-child(even) {{
-                background-color: #f8f8f8;
-            }}
-            tr:hover {{
-                background-color: #f0f0f0;
-            }}
-        </style>
-        <div class='container'>
-            <div class='header'>
-                当前检测到 {len(frame_info)} 个气泡
-            </div>
-            <table>
-                <tr>
-                    <th>序号</th>
-                    <th>气泡ID</th>
-                    <th>位置(x,y)</th>
-                    <th>尺寸(w×h)</th>
-                    <th>角度(°)</th>
-                    <th>速度(m/s)</th>
-                    <th>体积(mm³)</th>
-                </tr>
-        """
-        
-        # 按气泡ID排序
-        sorted_bubbles = sorted(frame_info.items(), key=lambda x: x[0])
-        
-        # 添加行号
-        for row_num, (bubble_id, info) in enumerate(sorted_bubbles, 1):
-            table_html += f"""
-                <tr>
-                    <td>{row_num}</td>
-                    <td>{info['id']}</td>
-                    <td>({info['x']:.1f}, {info['y']:.1f})</td>
-                    <td>{info['width']:.1f}×{info['height']:.1f}</td>
-                    <td>{info['angle']:.1f}</td>
-                    <td>{info['speed']:.2f}</td>
-                    <td>{info['volume']:.2f}</td>
-                </tr>
-            """
-            
-        table_html += """
-            </table>
-        </div>
-        """
-        
-        self.info_label.setText(table_html)
+        # 无论窗口是否可见，都保存当前帧的气泡信息
+        if frame_info:
+            self.frame_info_dict[self.current_frame_index] = frame_info
 
     def start_frame_preprocessing(self):
         """启动帧预处理"""
@@ -2037,3 +2173,163 @@ class MainWindow(QMainWindow):
         # 否则实时处理
         frame = self.frames[frame_index]
         return self.process_frame_with_yolo(frame, frame_index)
+
+    def closeEvent(self, event):
+        """窗口关闭事件处理
+        
+        Args:
+            event: 关闭事件对象
+        """
+        # 关闭气泡信息窗口
+        if hasattr(self, 'bubble_info_window') and self.bubble_info_window.isVisible():
+            self.bubble_info_window.close()
+            
+        # 接受关闭事件
+        event.accept()
+
+    def _draw_trajectories(self, frame, trajectories, current_frame_index, speed, active=True, color_by_time=True):
+        """绘制气泡轨迹
+        
+        Args:
+            frame: 要绘制轨迹的图像帧
+            trajectories: 轨迹字典
+            current_frame_index: 当前帧索引
+            active: 是否为活动轨迹
+            speed: 速度
+            color_by_time: 是否根据时间变化颜色，默认为True
+        """
+        import cv2
+        import numpy as np
+        
+        # 像素尺度（毫米/像素）
+        pixel_scale = 0.080128
+        # 帧率和帧时间，用于计算速度
+        fps = 10000  # 假设为100fps，可根据实际情况调整
+        dt = 1.0 / fps  # 秒/帧
+        # 最大速度范围（米/秒）
+        min_speed = 5.0  # 最小速度为5m/s
+        max_speed = 15.0  # 最大速度为15m/s
+        
+        for bubble_id, trajectory in trajectories.items():
+            if len(trajectory) < 2:
+                continue
+                
+            # 获取基础颜色 - 不再需要
+            # base_color = self.trajectory_colors.get(bubble_id, (0, 0, 192))
+            
+            # 绘制轨迹线段
+            for j in range(1, len(trajectory)):
+                start_point = tuple(map(int, trajectory[j-1][0]))
+                end_point = tuple(map(int, trajectory[j][0]))
+                
+                # 计算两点之间的距离（像素）
+                dx = end_point[0] - start_point[0]
+                dy = end_point[1] - start_point[1]
+                distance_pixels = np.sqrt(dx**2 + dy**2)
+                
+                # 计算时间差（秒）- 假设轨迹点的第二个元素是帧索引
+                frames_diff = trajectory[j][1] - trajectory[j-1][1]
+                time_diff = frames_diff * dt
+                
+                # 计算速度（米/秒）
+                if time_diff > 0:
+                    # 转换像素距离为毫米，再转为米
+                    distance_meters = distance_pixels * pixel_scale / 1000.0
+                    speed = distance_meters / time_diff  # 米/秒
+                else:
+                    speed = 0.0
+                
+                if color_by_time:
+                    # 根据时间设置颜色
+                    # 计算轨迹点与当前帧的时间差
+                    time_from_current = abs(trajectory[j][1] - current_frame_index)
+                    # 设置最大时间差为100帧
+                    max_time_diff = 100
+                    time_ratio = min(1.0, time_from_current / max_time_diff)
+                    
+                    # 从蓝色(255,0,0)到绿色(0,255,0)再到红色(0,0,255)的渐变 - BGR格式
+                    if time_ratio < 0.5:  # 紫色到青色
+                        sub_ratio = time_ratio * 2
+                        blue = int(255 * (1 - 0.3 * sub_ratio))
+                        green = int(100 + 155 * sub_ratio)
+                        red = int(180 * (1 - sub_ratio))
+                    else:  # 青色到橙色
+                        sub_ratio = (time_ratio - 0.5) * 2
+                        blue = int(255 * (1 - 0.7 - 0.3 * sub_ratio))
+                        green = int(255 * (1 - 0.6 * sub_ratio))
+                        red = int(180 + 75 * sub_ratio)
+                    
+                    color = (blue, green, red)  # BGR格式
+                else:
+                    # 根据速度设置颜色
+                    # 将速度限制在min_speed到max_speed范围内
+                    speed_ratio = 0.0
+                    if speed >= min_speed:
+                        speed_ratio = min(1.0, (speed - min_speed) / (max_speed - min_speed))
+                    
+                    # 增强颜色对比度 - BGR格式
+                    # 从紫色(128,0,128)到橙色(0,165,255)的渐变
+                    blue = int(128 * (1 - speed_ratio))  # 紫色到橙色，蓝色减少
+                    green = int(165 * speed_ratio)       # 紫色到橙色，绿色增加
+                    red = int(128 + 127 * speed_ratio)   # 紫色到橙色，红色增加
+                    
+                    color = (blue, green, red)  # BGR格式
+                
+                if active:
+                    # 活动轨迹：使用基于速度的颜色和较粗的线条
+                    thickness = 2
+                else:
+                    # 非活动轨迹：使用相同颜色但透明度更高（通过调整亮度实现）
+                    color = tuple(int(c * 0.5) for c in color)  # 降低更多亮度来增强对比
+                    thickness = 1
+                
+                # 绘制线段
+                cv2.line(frame, start_point, end_point, color, thickness)
+
+    def save_bubble_info_to_csv(self, frame_index, frame_info):
+        """将当前帧的气泡信息保存为CSV文件
+        
+        Args:
+            frame_index: 帧索引
+            frame_info: 当前帧的气泡信息字典
+        """
+        if not frame_info:
+            return
+            
+        # 确保结果文件夹存在
+        if not os.path.exists(self.result_folder):
+            os.makedirs(self.result_folder)
+            
+        # 创建CSV子文件夹
+        csv_folder = os.path.join(self.result_folder, "bubble_csv")
+        if not os.path.exists(csv_folder):
+            os.makedirs(csv_folder)
+            
+        # 创建CSV文件名
+        csv_file = os.path.join(csv_folder, f"frame_{frame_index:04d}.csv")
+        
+        try:
+            # 打开CSV文件并写入
+            with open(csv_file, 'w', newline='') as f:
+                # 创建CSV writer对象
+                writer = csv.writer(f)
+                
+                # 写入表头
+                writer.writerow(['气泡ID', 'X坐标', 'Y坐标', '宽度', '高度', '角度', '速度(m/s)', '体积'])
+                
+                # 写入每个气泡的信息
+                for bubble_id, info in frame_info.items():
+                    writer.writerow([
+                        info['id'],
+                        f"{info['x']:.2f}",
+                        f"{info['y']:.2f}",
+                        f"{info['width']:.2f}",
+                        f"{info['height']:.2f}",
+                        f"{info['angle']:.2f}",
+                        f"{info['speed']:.4f}",
+                        f"{info['volume']:.4f}"
+                    ])
+                    
+            self.add_log(f"已保存帧 {frame_index} 的气泡信息到 {csv_file}")
+        except Exception as e:
+            self.add_log(f"保存帧 {frame_index} 的气泡信息到CSV时出错: {str(e)}")
