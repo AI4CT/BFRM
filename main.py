@@ -2,7 +2,7 @@ import sys
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtGui import QFont
 from gui import MainWindow
-# 这个版本很好，2025年2月25日晚10点
+
 def main():
     # 先创建QApplication实例
     app = QApplication(sys.argv)

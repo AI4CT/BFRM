@@ -1651,7 +1651,7 @@ class MainWindow(QMainWindow):
         # 启动预处理线程
         self.start_frame_preprocessing()
         
-        self.add_log(f"开始播放视频，速度: {self.playback_speed}x，帧间隔: {interval}ms")
+        self.add_log(f"开始播放视频，速度: {self.playback_speed}x,帧间隔: {interval}ms")
     
     def pause_playback(self):
         """暂停播放视频"""
@@ -1940,10 +1940,10 @@ class MainWindow(QMainWindow):
                 self.device = 'cpu'
                 
             # 加载模型并指定设备
-            self.model = YOLO(r'C:\codebase\yolo\model\yolo11n-obb.pt')
+            self.model = YOLO(r'C:\codebase\yolo\model\yolo11l-obb.pt')
             self.model.to(self.device)
             
-            self.add_log(f"YOLO模型初始化完成，使用设备: {self.device}")
+            self.add_log(f"YOLO模型初始化完成,使用设备: {self.device}")
             return True
         except Exception as e:
             self.add_log(f"YOLO模型初始化失败: {str(e)}")
@@ -2058,7 +2058,9 @@ class MainWindow(QMainWindow):
                         'angle': angle,
                         'speed': speed,
                         'volume': volume,
-                        'class_id': class_id
+                        'class_id': class_id,
+                        'type': 'single' if class_id == 0 else 'overlap',
+                        'confidence': r.obb.conf[i]
                     }
                     
                     # 绘制检测框
@@ -2319,12 +2321,10 @@ class MainWindow(QMainWindow):
                 writer = csv.writer(f)
                 
                 # 写入表头
-                writer.writerow(['气泡ID', 'X坐标', 'Y坐标', '宽度', '高度', '角度', '速度(m/s)', '体积', '类别'])
+                writer.writerow(['bubble_id', 'x', 'y', 'width', 'height', 'angle(degree)', 'speed(m/s)', 'volume(mm^3)', 'type', 'confidence'])
                 
                 # 写入每个气泡的信息
                 for bubble_id, info in frame_info.items():
-                    # 确定类别名称
-                    class_name = "single" if info.get('class_id', 0) == 0 else "overlap"
                     
                     writer.writerow([
                         info['id'],
@@ -2335,7 +2335,8 @@ class MainWindow(QMainWindow):
                         f"{info['angle']:.2f}",
                         f"{info['speed']:.4f}",
                         f"{info['volume']:.4f}",
-                        class_name
+                        info['type'],
+                        f"{info['confidence']:.4f}"
                     ])
                     
             self.add_log(f"已保存帧 {frame_index} 的气泡信息到 {csv_file}")
