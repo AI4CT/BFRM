@@ -15,7 +15,7 @@ plt.rcParams['font.sans-serif'] = ['DejaVu Sans']  # Use DejaVu Sans font
 plt.rcParams['axes.unicode_minus'] = False    # Correctly display negative signs
 
 class BubbleAnalyzer:
-    def __init__(self, csv_dir, video_path=None):
+    def __init__(self, csv_dir, output_dir, video_path=None):
         """
         Initialize bubble analyzer
         
@@ -24,8 +24,9 @@ class BubbleAnalyzer:
             video_path: Video file path (optional)
         """
         self.csv_dir = csv_dir
+        self.output_dir = output_dir
         self.video_path = video_path
-        self.output_dir = os.path.join(csv_dir, 'analysis_results')
+        self.output_dir = os.path.join(output_dir, 'analysis_results')
         self.bubble_crops_dir = os.path.join(self.output_dir, 'bubble_crops')
         self.visualization_dir = os.path.join(self.output_dir, 'visualizations')
         
@@ -90,58 +91,80 @@ class BubbleAnalyzer:
     
     def read_frame_data(self, csv_path):
         """
-        Read bubble data for a single frame
+        读取单帧气泡数据
         
         Args:
-            csv_path: CSV file path
+            csv_path: CSV文件路径
             
         Returns:
-            pandas.DataFrame: Bubble data
+            pandas.DataFrame: 气泡数据
         """
         try:
-            # Try different encodings to read CSV
+            # 尝试不同编码读取CSV
             encodings = ['utf-8', 'gbk', 'gb2312', 'gb18030', 'latin1']
             
             for encoding in encodings:
                 try:
-                    # Try direct reading
+                    # 尝试直接读取
                     df = pd.read_csv(csv_path, encoding=encoding)
                     
-                    # Check if column names are readable
+                    # 检查列名是否可读
                     if not all(isinstance(col, str) for col in df.columns):
                         continue
-                        
-                    # If successfully read and column names are normal, process column names
-                    # If the column names contain "bubble_id" or similar names with possible encoding issues
+                    
+                    # 预期的列名
+                    expected_columns = [
+                        'bubble_id', 'x', 'y', 'width', 'height', 
+                        'angle(degree)', 'speed(m/s)', 'volume(mm^3)', 
+                        'type', 'confidence'
+                    ]
+                    
+                    # 如果列名包含"bubble_id"或类似名称，可能需要重命名
                     if 'bubble_id' in df.columns or any('ID' in col for col in df.columns):
-                        # Rename columns
-                        new_columns = ['bubble_id', 'x', 'y', 'width', 'height', 'angle', 'velocity', 'volume', 'type']
-                        if len(df.columns) == len(new_columns):
-                            df.columns = new_columns
+                        # 根据列数决定如何重命名
+                        if len(df.columns) == len(expected_columns):
+                            df.columns = expected_columns
+                        elif len(df.columns) == 9:  # 旧格式，没有confidence列
+                            df.columns = expected_columns[:-1]
+                            # 添加默认confidence列
+                            df['confidence'] = 1.0
+                    
+                    # 确保必要的列存在
+                    missing_columns = [col for col in expected_columns if col not in df.columns]
+                    if missing_columns:
+                        for col in missing_columns:
+                            if col == 'angle(degree)':
+                                df[col] = 0.0
+                            elif col == 'type':
+                                df[col] = 'single'
+                            elif col == 'confidence':
+                                df[col] = 1.0
+                            else:
+                                df[col] = 0.0
                     
                     return df
                 except:
                     continue
             
-            # If all encoding attempts fail, try reading as binary and parse manually
+            # 如果所有编码尝试都失败，尝试以二进制方式读取并手动解析
             with open(csv_path, 'rb') as f:
                 content = f.read()
                 
-            # Try to detect column count for manual parsing
+            # 尝试检测列数进行手动解析
             lines = content.split(b'\n')
             if len(lines) > 1:
-                # Assume second line is data row
+                # 假设第二行是数据行
                 data_line = lines[1]
                 fields = data_line.split(b',')
                 
-                # If field count is correct (9 fields), parse manually
-                if len(fields) == 9:
+                # 根据字段数量决定如何解析
+                if len(fields) >= 9:
                     data = []
-                    for line in lines[1:]:  # Skip header line
+                    for line in lines[1:]:  # 跳过表头行
                         if line.strip():
                             fields = line.split(b',')
-                            if len(fields) == 9:
-                                # Convert binary data to strings or numbers
+                            if len(fields) >= 9:
+                                # 将二进制数据转换为字符串或数字
                                 row = []
                                 for i, field in enumerate(fields):
                                     if i == 0:  # bubble_id
@@ -158,22 +181,36 @@ class BubbleAnalyzer:
                                                 row.append('overlap')
                                         except:
                                             row.append('unknown')
-                                    else:  # numeric fields
+                                    elif i == 9 and len(fields) > 9:  # confidence
+                                        try:
+                                            row.append(float(field))
+                                        except:
+                                            row.append(1.0)
+                                    else:  # 其他数值字段
                                         try:
                                             row.append(float(field))
                                         except:
                                             row.append(0.0)
+                                
+                                # 如果没有confidence列，添加默认值
+                                if len(row) == 9:
+                                    row.append(1.0)
+                                
                                 data.append(row)
                     
-                    # Create DataFrame
-                    df = pd.DataFrame(data, columns=['bubble_id', 'x', 'y', 'width', 'height', 'angle', 'velocity', 'volume', 'type'])
+                    # 创建DataFrame
+                    df = pd.DataFrame(data, columns=[
+                        'bubble_id', 'x', 'y', 'width', 'height', 
+                        'angle(degree)', 'speed(m/s)', 'volume(mm^3)', 
+                        'type', 'confidence'
+                    ])
                     return df
             
-            print(f"Cannot parse file: {csv_path}")
+            print(f"无法解析文件: {csv_path}")
             return pd.DataFrame()
             
         except Exception as e:
-            print(f"Error reading CSV file {csv_path}: {str(e)}")
+            print(f"读取CSV文件 {csv_path} 时出错: {str(e)}")
             return pd.DataFrame()
     
     def analyze_all_frames(self):
@@ -391,8 +428,10 @@ class BubbleAnalyzer:
         os.makedirs(overlap_dir, exist_ok=True)
         
         # Create bubble ID directories (vertical storage)
-        bubble_id_dir = os.path.join(self.bubble_crops_dir, 'by_bubble_id')
+        bubble_id_dir = os.path.join(self.bubble_crops_dir, 'bubble_id')
         os.makedirs(bubble_id_dir, exist_ok=True)
+        frame_id_dir = os.path.join(self.bubble_crops_dir, 'frame_id')
+        os.makedirs(frame_id_dir, exist_ok=True)
         
         # Track all bubble IDs and their information
         all_bubbles = {}  # For storing information of all bubbles, indexed by ID
@@ -451,7 +490,7 @@ class BubbleAnalyzer:
                 continue
             
             # Create directory for current frame
-            frame_dir = os.path.join(self.bubble_crops_dir, f'frame_{frame_number:04d}')
+            frame_dir = os.path.join(frame_id_dir, f'frame_{frame_number:04d}')
             os.makedirs(frame_dir, exist_ok=True)
             
             # Create bubbles info CSV file for this frame
@@ -469,7 +508,7 @@ class BubbleAnalyzer:
                     bubble_type = bubble['type']
                     x, y = float(bubble['x']), float(bubble['y'])
                     width, height = float(bubble['width']), float(bubble['height'])
-                    angle = float(bubble['angle'])
+                    angle = float(bubble['angle(degree)'])
                     
                     # Calculate rotated rectangle corners
                     corners = self.rotate_box_coordinates(x, y, width, height, angle)
@@ -489,7 +528,7 @@ class BubbleAnalyzer:
                         bubble_region = frame[y_min:y_max, x_min:x_max]
                         
                         # Save bubble image
-                        bubble_image_path = os.path.join(frame_dir, f'bubble_{bubble_id:04d}_{bubble_type}.png')
+                        bubble_image_path = os.path.join(frame_dir, f'{bubble_type}_{bubble_id:04d}.png')
                         cv2.imwrite(bubble_image_path, bubble_region)
                         
                         # Save a copy by type
@@ -531,7 +570,7 @@ class BubbleAnalyzer:
                     
                     x, y = float(bubble_info['x']), float(bubble_info['y'])
                     width, height = float(bubble_info['width']), float(bubble_info['height'])
-                    angle = float(bubble_info['angle'])
+                    angle = float(bubble_info['angle(degree)'])
                     bubble_type = bubble_info['type']
                     
                     # Calculate rotated rectangle corners
@@ -630,7 +669,7 @@ class BubbleAnalyzer:
                     bubble_type = bubble['type']
                     x, y = float(bubble['x']), float(bubble['y'])
                     width, height = float(bubble['width']), float(bubble['height'])
-                    angle = float(bubble['angle'])
+                    angle = float(bubble['angle(degree)'])
                     
                     # Use specified colors
                     if bubble_type == 'single':
@@ -715,7 +754,7 @@ class BubbleAnalyzer:
                     x, y = float(bubble['x']), float(bubble['y'])
                     width = float(bubble['width'])
                     height = float(bubble['height'])
-                    angle = float(bubble['angle'])
+                    angle = float(bubble['angle(degree)'])
                     bubble_type = bubble['type']
                     
                     if bubble_id not in all_bubbles:
@@ -811,7 +850,7 @@ class BubbleAnalyzer:
                         bubble_id = int(bubble['bubble_id'])
                         x, y = float(bubble['x']), float(bubble['y'])
                         width, height = float(bubble['width']), float(bubble['height'])
-                        angle = float(bubble['angle'])
+                        angle = float(bubble['angle(degree)'])
                         bubble_type = bubble['type']
                         
                         # Choose color based on bubble type
@@ -881,31 +920,32 @@ class BubbleAnalyzer:
 def main():
     """Main function"""
     # Set path
-    csv_dir = r"C:\codebase\BFRM\results\yolo11n-obb\bubble_csv"
-    video_path = r"C:\Users\Administrator\Desktop\BFRM\data\bubbly_flow.mp4"
+    csv_dir = r"C:\codebase\BFRM\results\yolo11l-obb\bubble_csv"
+    output_dir = r"C:\codebase\BFRM\results\yolo11l-obb"
+    video_path = r"C:\codebase\BFRM\results\yolo11l-obb\bubbly_flow.mp4"
     
     print("\n===== Starting Bubble Flow Analysis =====\n")
     
     # Create analyzer
     print("Initializing bubble analyzer...")
-    analyzer = BubbleAnalyzer(csv_dir, video_path)
+    analyzer = BubbleAnalyzer(csv_dir, output_dir, video_path)
     
     # Analyze data and create statistics plots
     print("\n===== Step 1: Analyze Data =====")
-    analyzer.analyze_all_frames()
+    # analyzer.analyze_all_frames()
     
     print("\n===== Step 2: Create Static Statistics Plot =====")
-    analyzer.create_count_plot()
+    # analyzer.create_count_plot()
     
     print("\n===== Step 3: Create Dynamic Statistics Plot =====")
-    analyzer.create_count_animation()
+    # analyzer.create_count_animation()
     
     # Visualize detection results and trajectories
     print("\n===== Step 4: Visualize Detection Results =====")
-    analyzer.visualize_detection_results()
+    # analyzer.visualize_detection_results()
     
     print("\n===== Step 5: Visualize Bubble Trajectories =====")
-    analyzer.visualize_bubble_trajectories(max_frames=100)  # Only show the trajectory of each bubble for the last 100 frames
+    # analyzer.visualize_bubble_trajectories(max_frames=100)  # Only show the trajectory of each bubble for the last 100 frames
     
     # Extract bubble regions
     print("\n===== Step 6: Extract Bubble Regions =====")
