@@ -35,7 +35,7 @@ class BubbleInfoWindow(QMainWindow):
         
         # 设置窗口标题和图标
         self.setWindowTitle("气泡信息详情")
-        self.setWindowIcon(QIcon("bubble.ico"))
+        self.setWindowIcon(QIcon("icons/bubble.ico"))
         
         # 设置窗口大小
         self.resize(800, 600)
@@ -215,7 +215,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("气泡流重建模型")
         
         # 设置应用程序图标
-        self.setWindowIcon(QIcon("bubble.ico"))
+        self.setWindowIcon(QIcon("icons/bubble.ico"))
         
         # 初始化变量
         self.frames = []  # 存储视频帧

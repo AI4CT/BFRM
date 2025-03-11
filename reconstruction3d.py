@@ -23,27 +23,28 @@ def calc_bubble_radius(row):
     return (row['width'] + row['height']) / 4
 
 def calc_bubble_ellipsoid(row):
-    """计算气泡的椭球体参数"""
+    """计算气泡的椭球体参数 - 简化版本"""
     # 获取气泡在x-z平面的宽度、高度和角度
     width = row['width']
     height = row['height']
-    angle_deg = row['angle(degree)']
+    angle_deg = -row['angle(degree)']
     
     # 将角度转换为弧度
     angle_rad = np.radians(angle_deg)
     
-    # x-z平面上的两个轴
-    a = width / 2  # 半长轴
-    b = height / 2  # 半短轴
-    
-    # 第三个轴（y方向）使用宽度和高度的最大值
-    c = max(width, height) / 2
+    # 直接设置三个轴的长度
+    # a: x轴方向半径
+    # b: z轴方向半径
+    # c: y轴方向半径（深度）
+    a = width / 2  # x轴半径
+    b = height / 2  # z轴半径
+    c = max(width, height) / 2  # y轴半径（深度）
     
     # 返回椭球体的三个半轴长度和旋转角度
     return {
-        'a': a,  # x-z平面上的第一个半轴
-        'b': b,  # x-z平面上的第二个半轴
-        'c': c,  # y方向的半轴
+        'a': a,  # x轴半径
+        'b': b,  # z轴半径
+        'c': c,  # y轴半径（深度）
         'angle_rad': angle_rad,  # x-z平面上的旋转角度（弧度）
         'angle_deg': angle_deg   # x-z平面上的旋转角度（度）
     }
@@ -351,7 +352,7 @@ def find_optimal_y_with_gaussian(current_bubble, assigned_bubbles, mu, std, max_
 def visualize_bubbles_3d(df_3d, output_path):
     """创建3D可视化并保存"""
     # 创建PyVista对象
-    plotter = pl.Plotter(window_size=[1024, 768], off_screen=True)
+    plotter = pl.Plotter(window_size=[1920, 1440], off_screen=True)
     
     # 创建一个表示区域的边界框
     # 确保坐标系的一致性：x=宽度，y=深度，z=高度
@@ -371,41 +372,75 @@ def visualize_bubbles_3d(df_3d, output_path):
     vol_min, vol_max = volumes.min(), volumes.max()
     norm_volumes = (volumes - vol_min) / (vol_max - vol_min) if vol_max > vol_min else volumes * 0 + 0.5
     
+    # 创建椭球体三维表面点的函数
+    def create_ellipsoid_mesh(center, a, b, c, angle_rad, resolution=50):
+        """创建椭球体网格点 - 简化版本
+        
+        Args:
+            center: 椭球体中心(x, y, z)
+            a: x轴半径
+            b: z轴半径
+            c: y轴半径（深度）
+            angle_rad: x-z平面上的旋转角度（弧度）
+            resolution: 网格分辨率
+        
+        Returns:
+            椭球体网格对象
+        """
+        # 创建参数网格
+        u = np.linspace(0, 2 * np.pi, resolution)
+        v = np.linspace(0, np.pi, resolution)
+        
+        # 生成标准椭球体坐标
+        x = a * np.outer(np.cos(u), np.sin(v))
+        y = c * np.outer(np.ones_like(u), np.cos(v))
+        z = b * np.outer(np.sin(u), np.sin(v))
+        
+        # 应用旋转变换 (x-z平面上的旋转)
+        x_rot = x * np.cos(angle_rad) - z * np.sin(angle_rad)
+        z_rot = x * np.sin(angle_rad) + z * np.cos(angle_rad)
+        
+        # 移动到中心位置
+        x_final = x_rot + center[0]
+        y_final = y + center[1]
+        z_final = z_rot + center[2]
+        
+        # 创建网格点坐标
+        points = np.column_stack((x_final.flatten(), y_final.flatten(), z_final.flatten()))
+        
+        # 创建三角形连接点
+        n_u, n_v = resolution, resolution
+        
+        # 创建网格索引
+        faces = []
+        for i in range(n_u-1):
+            for j in range(n_v-1):
+                p1 = i * n_v + j
+                p2 = (i+1) * n_v + j
+                p3 = (i+1) * n_v + (j+1)
+                p4 = i * n_v + (j+1)
+                
+                # 添加两个三角形面
+                faces.extend([3, p1, p2, p3])
+                faces.extend([3, p1, p3, p4])
+        
+        # 创建PolyData对象
+        mesh = pl.PolyData(points, faces=np.array(faces))
+        return mesh
+    
+    # 创建一个列表存储所有气泡的网格
+    bubble_meshes = []
+    
     # 添加每个气泡
     for i, row in df_3d.iterrows():
         # 获取椭球体参数
         a, b, c = row['a'], row['b'], row['c']
         angle_rad = row['angle_rad']
+        center = (row['x'], row['y'], row['z'])
         
-        # 创建球体并转换为椭球体形状
-        # 直接在正确的位置创建球体
-        sphere = pl.Sphere(radius=1.0, center=(row['x'], row['y'], row['z']))
-        
-        # 创建变换矩阵：先缩放，再旋转
-        # 创建缩放矩阵
-        scale_matrix = np.eye(4)
-        scale_matrix[0, 0] = a
-        scale_matrix[1, 1] = c
-        scale_matrix[2, 2] = b
-        
-        # 创建旋转矩阵
-        rot_matrix = np.eye(4)
-        rot_matrix[0, 0] = np.cos(angle_rad)
-        rot_matrix[0, 2] = -np.sin(angle_rad)
-        rot_matrix[2, 0] = np.sin(angle_rad)
-        rot_matrix[2, 2] = np.cos(angle_rad)
-        
-        # 移动到原点
-        sphere.translate([-row['x'], -row['y'], -row['z']])
-        
-        # 应用缩放
-        sphere.transform(scale_matrix)
-        
-        # 应用旋转
-        sphere.transform(rot_matrix)
-        
-        # 移回原位置
-        sphere.translate([row['x'], row['y'], row['z']])
+        # 创建椭球体网格
+        ellipsoid = create_ellipsoid_mesh(center, a, b, c, angle_rad)
+        bubble_meshes.append(ellipsoid)  # 保存网格用于后续STL导出
         
         # 根据气泡类型和体积设置颜色
         color_idx = norm_volumes[i]
@@ -415,7 +450,7 @@ def visualize_bubbles_3d(df_3d, output_path):
         opacity = 0.8 if row['type'] == 'single' else 0.5
         
         # 添加椭球体到场景
-        plotter.add_mesh(sphere, color=color, opacity=opacity)
+        plotter.add_mesh(ellipsoid, color=color, opacity=opacity)
         
         # 添加气泡ID标签
         plotter.add_point_labels(
@@ -427,23 +462,72 @@ def visualize_bubbles_3d(df_3d, output_path):
         )
     
     # 设置相机位置
-    plotter.camera.position = (IMAGE_WIDTH * 1.5, DEPTH_RANGE * 1.5, IMAGE_HEIGHT * 1.5)
-    plotter.camera.focal_point = (IMAGE_WIDTH/2, DEPTH_RANGE/2, IMAGE_HEIGHT/2)
-    plotter.camera.up = (0, 0, 1)  # 保持z轴为上方向
+    plotter.enable_parallel_projection()
+    # 使用camera_position属性设置相机位置
+    plotter.camera_position = [
+        (IMAGE_WIDTH * 1, DEPTH_RANGE * 1, IMAGE_HEIGHT * 1),  # 相机位置
+        (IMAGE_WIDTH/2, DEPTH_RANGE/2, IMAGE_HEIGHT/2),  # 焦点
+        (0, 0, 1)  # 上方向
+    ]
+    plotter.reset_camera()  # 重置相机以确保视角生效
     
     # 添加坐标轴
-    plotter.add_axes(xlabel='X (宽度)', ylabel='Y (深度)', zlabel='Z (高度)')
+    plotter.add_axes(xlabel='X (Width)', ylabel='Y (Depth)', zlabel='Z (Height)')
     
     # 添加标题
     plotter.add_text("Bubble 3D Reconstruction", font_size=20)
-    
+    plotter.camera.zoom(1.5)  # 扩大视图使模型充满屏幕
     # 保存图像
     screenshot_path = f"{output_path}/3d_visualization.png"
-    plotter.screenshot(screenshot_path)
+    plotter.screenshot(screenshot_path, window_size=[3840, 2880], return_img=False)
     print(f"3D visualization saved to {screenshot_path}")
     
-    # 移除HTML导出功能，避免依赖问题
-    # plotter.export_html(f"{output_path}/3d_visualization.html")
+    # 保存三个正交视角的截图
+    # 设置正交投影
+    
+    # 视角1：正视图 (XZ平面)
+    plotter.camera_position = 'yz'  # 使用预设视角
+    plotter.reset_camera()  # 重置相机以确保视角生效
+    # 调整缩放以充满整个视野
+    plotter.camera.zoom(1.75)  # 扩大视图使模型充满屏幕
+    front_view_path = f"{output_path}/3d_front_view.png"
+    plotter.screenshot(front_view_path, window_size=[3840, 2880], return_img=False)
+    print(f"正视图已保存至 {front_view_path}")
+    
+    # 视角2：侧视图 (YZ平面)
+    plotter.camera_position = 'xz'  # 使用预设视角
+    plotter.reset_camera()  # 重置相机以确保视角生效
+    # 调整缩放以充满整个视野
+    plotter.camera.zoom(1.75)  # 扩大视图使模型充满屏幕
+    side_view_path = f"{output_path}/3d_side_view.png"
+    plotter.screenshot(side_view_path, window_size=[3840, 2880], return_img=False)
+    print(f"侧视图已保存至 {side_view_path}")
+    
+    # 视角3：顶视图 (XY平面)
+    plotter.camera_position = 'xy'  # 使用预设视角
+    plotter.reset_camera()  # 重置相机以确保视角生效
+    # 调整缩放以充满整个视野
+    plotter.camera.zoom(1.5)  # 扩大视图使模型充满屏幕
+    top_view_path = f"{output_path}/3d_top_view.png"
+    plotter.screenshot(top_view_path, window_size=[3840, 2880], return_img=False)
+    print(f"顶视图已保存至 {top_view_path}")
+    
+    # 恢复透视投影
+    # plotter.disable_parallel_projection()
+    # 保存为STL文件
+    stl_path = f"{output_path}/3d_bubbles.stl"
+    
+    try:
+        # 合并所有气泡网格
+        combined_mesh = bubble_meshes[0]
+        for mesh in bubble_meshes[1:]:
+            combined_mesh = combined_mesh.merge(mesh)
+        
+        # 保存合并后的网格为 STL 文件
+        combined_mesh.save(stl_path)
+        print(f"3D model saved as STL to {stl_path}")
+    except Exception as e:
+        print(f"保存 STL 文件时出错: {str(e)}")
     
     # 关闭plotter
     plotter.close()
@@ -487,220 +571,6 @@ def export_bubble_info(df_3d, output_path, frame_num):
     print(f"第 {frame_num} 帧的所有气泡信息已导出到 {all_bubbles_path}")
     return export_dir
 
-def visualize_with_matplotlib(df_3d, output_path):
-    """使用Matplotlib创建3D可视化（作为备选方案）"""
-    try:
-        from mpl_toolkits.mplot3d import Axes3D
-        import numpy as np
-        
-        # 按类型分组
-        df_single = df_3d[df_3d['type'] == 'single']
-        df_overlap = df_3d[df_3d['type'] == 'overlap']
-        
-        # 创建3D图
-        fig = plt.figure(figsize=(12, 10))
-        ax = fig.add_subplot(111, projection='3d')
-        
-        # 设置图表标题和轴标签
-        ax.set_title('Bubble 3D Reconstruction')
-        ax.set_xlabel('X (宽度)')
-        ax.set_ylabel('Y (深度)')
-        ax.set_zlabel('Z (高度)')
-        
-        # 设置轴范围
-        ax.set_xlim(0, IMAGE_WIDTH)
-        ax.set_ylim(0, DEPTH_RANGE)
-        ax.set_zlim(0, IMAGE_HEIGHT)
-        
-        # 定义一个函数将体积映射为点大小
-        def map_volume_to_size(volume):
-            # 将体积映射到合理的点大小范围
-            return max(10, min(300, volume / 5))
-        
-        # 创建一个函数来绘制椭球体
-        def plot_ellipsoid(ax, center, radii, rotation, color, alpha=0.3, resolution=20):
-            """绘制一个椭球体"""
-            # 创建球面网格
-            u = np.linspace(0, 2 * np.pi, resolution)
-            v = np.linspace(0, np.pi, resolution)
-            x = radii[0] * np.outer(np.cos(u), np.sin(v))
-            y = radii[1] * np.outer(np.sin(u), np.sin(v))
-            z = radii[2] * np.outer(np.ones_like(u), np.cos(v))
-            
-            # 应用旋转
-            for i in range(len(x)):
-                for j in range(len(x[i])):
-                    # 旋转椭球体 - 在x-z平面上旋转
-                    xval = x[i, j]
-                    zval = z[i, j]
-                    # 旋转后的坐标
-                    x[i, j] = xval * np.cos(rotation) - zval * np.sin(rotation)
-                    z[i, j] = xval * np.sin(rotation) + zval * np.cos(rotation)
-            
-            # 移动到中心位置
-            x = x + center[0]
-            y = y + center[1]
-            z = z + center[2]
-            
-            # 绘制椭球体
-            ax.plot_surface(x, y, z, color=color, alpha=alpha, linewidth=0)
-        
-        # 为每个气泡绘制椭球体
-        for i, row in df_single.iterrows():
-            center = (row['x'], row['y'], row['z'])
-            # 注意：这里y代表深度，radii顺序为(x轴半径, y轴半径, z轴半径)
-            radii = (row['a'], row['c'], row['b'])  # x, y, z
-            plot_ellipsoid(ax, center, radii, row['angle_rad'], 'blue', alpha=0.7)
-        
-        for i, row in df_overlap.iterrows():
-            center = (row['x'], row['y'], row['z'])
-            # 注意：这里y代表深度，radii顺序为(x轴半径, y轴半径, z轴半径)
-            radii = (row['a'], row['c'], row['b'])  # x, y, z
-            plot_ellipsoid(ax, center, radii, row['angle_rad'], 'red', alpha=0.5)
-        
-        # 设置图例
-        import matplotlib.patches as mpatches
-        blue_patch = mpatches.Patch(color='blue', alpha=0.7, label='Single')
-        red_patch = mpatches.Patch(color='red', alpha=0.5, label='Overlap')
-        ax.legend(handles=[blue_patch, red_patch])
-        
-        # 设置视角
-        ax.view_init(elev=30, azim=45)
-        
-        # 添加标题
-        plt.title("气泡三维重建 (Matplotlib) - 椭球体模型")
-        
-        # 为部分气泡添加ID标签
-        for i, row in df_3d.iterrows():
-            if i % 10 == 0:  # 每10个气泡添加一个标签，避免太拥挤
-                ax.text(row['x'], row['y'], row['z'], f"{int(row['bubble_id'])}", 
-                       fontsize=8, color='black')
-        
-        # 保存图像
-        plt.tight_layout()
-        mpl_path = f"{output_path}/3d_visualization_mpl.png"
-        plt.savefig(mpl_path, dpi=200)
-        plt.close()
-        print(f"Matplotlib 3D visualization saved to {mpl_path}")
-        return True
-    except Exception as e:
-        print(f"Matplotlib可视化失败: {str(e)}")
-        return False
-
-def visualize_2d_projections(df_3d, output_path):
-    """创建2D投影平面视图"""
-    try:
-        import numpy as np
-        
-        # 创建图形
-        fig, axs = plt.subplots(2, 2, figsize=(14, 12))
-        fig.suptitle("气泡分布三维空间的2D投影", fontsize=16)
-        
-        # 定义不同类型气泡的颜色和透明度
-        colors = {'single': 'blue', 'overlap': 'red'}
-        alpha = {'single': 0.7, 'overlap': 0.5}
-        
-        # XY平面投影 (俯视图) - X为宽度，Y为深度
-        ax = axs[0, 0]
-        for bubble_type in ['single', 'overlap']:
-            df_subset = df_3d[df_3d['type'] == bubble_type]
-            ax.scatter(
-                df_subset['x'], 
-                df_subset['y'],
-                s=df_subset['volume(mm^3)'] / 3,
-                c=colors[bubble_type],
-                alpha=alpha[bubble_type],
-                edgecolors='black',
-                linewidths=0.2,
-                label=f"{bubble_type.capitalize()} Bubbles"
-            )
-        ax.set_xlabel('X (宽度)')
-        ax.set_ylabel('Y (深度)')
-        ax.set_title('俯视图 (XY平面)')
-        ax.grid(True, linestyle='--', alpha=0.6)
-        ax.set_xlim(0, IMAGE_WIDTH)
-        ax.set_ylim(0, DEPTH_RANGE)
-        
-        # XZ平面投影 (前视图) - X为宽度，Z为高度
-        ax = axs[0, 1]
-        for bubble_type in ['single', 'overlap']:
-            df_subset = df_3d[df_3d['type'] == bubble_type]
-            ax.scatter(
-                df_subset['x'], 
-                df_subset['z'],
-                s=df_subset['volume(mm^3)'] / 3,
-                c=colors[bubble_type],
-                alpha=alpha[bubble_type],
-                edgecolors='black',
-                linewidths=0.2,
-                label=f"{bubble_type.capitalize()} Bubbles"
-            )
-        ax.set_xlabel('X (宽度)')
-        ax.set_ylabel('Z (高度)')
-        ax.set_title('前视图 (XZ平面)')
-        ax.grid(True, linestyle='--', alpha=0.6)
-        ax.set_xlim(0, IMAGE_WIDTH)
-        ax.set_ylim(0, IMAGE_HEIGHT)
-        
-        # YZ平面投影 (侧视图) - Y为深度，Z为高度
-        ax = axs[1, 0]
-        for bubble_type in ['single', 'overlap']:
-            df_subset = df_3d[df_3d['type'] == bubble_type]
-            ax.scatter(
-                df_subset['y'], 
-                df_subset['z'],
-                s=df_subset['volume(mm^3)'] / 3,
-                c=colors[bubble_type],
-                alpha=alpha[bubble_type],
-                edgecolors='black',
-                linewidths=0.2,
-                label=f"{bubble_type.capitalize()} Bubbles"
-            )
-        ax.set_xlabel('Y (深度)')
-        ax.set_ylabel('Z (高度)')
-        ax.set_title('侧视图 (YZ平面)')
-        ax.grid(True, linestyle='--', alpha=0.6)
-        ax.set_xlim(0, DEPTH_RANGE)
-        ax.set_ylim(0, IMAGE_HEIGHT)
-        
-        # 体积分布直方图
-        ax = axs[1, 1]
-        volumes = df_3d['volume(mm^3)'].values
-        
-        # 计算合适的分箱数 - 增加分箱数使柱状图更窄
-        bins = min(30, int(len(volumes) / 3) + 1)
-        
-        # 按气泡类型分组绘制直方图
-        for bubble_type, color in zip(['single', 'overlap'], ['blue', 'red']):
-            df_subset = df_3d[df_3d['type'] == bubble_type]
-            if not df_subset.empty:
-                ax.hist(df_subset['volume(mm^3)'], bins=bins, alpha=0.6, 
-                       label=f"{bubble_type.capitalize()}", color=color, 
-                       rwidth=0.7)  # 减少柱宽，使其更清晰
-        
-        ax.set_xlabel('体积 (mm³)')
-        ax.set_ylabel('频率')
-        ax.set_title('气泡体积分布')
-        ax.grid(True, linestyle='--', alpha=0.3)
-        ax.legend()
-        
-        # 为每个子图添加图例
-        for i in range(2):
-            for j in range(2):
-                if i != 1 or j != 1:  # 排除体积直方图，它已经有了图例
-                    axs[i, j].legend()
-        
-        # 保存图像
-        plt.tight_layout()
-        proj_path = f"{output_path}/2d_projections.png"
-        plt.savefig(proj_path, dpi=200)
-        plt.close()
-        print(f"2D projections saved to {proj_path}")
-        return True
-    except Exception as e:
-        print(f"2D投影可视化失败: {str(e)}")
-        return False
-
 def visualize_density_estimation(df_3d, output_path):
     """创建气泡分布密度估计图"""
     try:
@@ -741,6 +611,7 @@ def visualize_density_estimation(df_3d, output_path):
         ax.grid(True, linestyle='--', alpha=0.3)
         ax.set_xlim(0, IMAGE_WIDTH)
         ax.set_ylim(0, DEPTH_RANGE)
+        
         
         # XZ平面密度估计 (前视图) - X为宽度，Z为高度
         ax = axs[0, 1]
@@ -819,9 +690,9 @@ def visualize_density_estimation(df_3d, output_path):
                        label=f"{bubble_type.capitalize()}", color=color, 
                        rwidth=0.7)  # 减少柱宽，使其更清晰
         
-        ax.set_xlabel('体积 (mm³)')
-        ax.set_ylabel('频率')
-        ax.set_title('气泡体积分布')
+        ax.set_xlabel('Volume(mm³)')
+        ax.set_ylabel('Frequency')
+        ax.set_title('Bubble Volume Distribution')
         ax.grid(True, linestyle='--', alpha=0.3)
         ax.legend()
         
@@ -847,10 +718,40 @@ def visualize_with_plotly_simple(df_3d, output_path):
         df_single = df_3d[df_3d['type'] == 'single']
         df_overlap = df_3d[df_3d['type'] == 'overlap']
         
-        # 使用体积来确定气泡大小
-        def map_volume_to_size(volume):
-            # 气泡体积转换为合理的点大小
-            return np.power(volume, 1/3) * 3  # 立方根 * 3
+        # 创建椭球体三维表面点的函数
+        def create_ellipsoid_mesh(center, a, b, c, angle_rad, resolution=20):
+            """创建椭球体网格点 - 简化版本
+            
+            Args:
+                center: 椭球体中心(x, y, z)
+                a: x轴半径
+                b: z轴半径
+                c: y轴半径（深度）
+                angle_rad: x-z平面上的旋转角度（弧度）
+                resolution: 网格分辨率
+            
+            Returns:
+                椭球体表面的三维点坐标
+            """
+            # 创建参数网格
+            u = np.linspace(0, 2 * np.pi, resolution)
+            v = np.linspace(0, np.pi, resolution)
+            
+            # 生成标准椭球体坐标
+            x = a * np.outer(np.cos(u), np.sin(v))
+            y = c * np.outer(np.ones_like(u), np.cos(v))
+            z = b * np.outer(np.sin(u), np.sin(v))
+            
+            # 应用旋转变换 (x-z平面上的旋转)
+            x_rot = x * np.cos(angle_rad) - z * np.sin(angle_rad)
+            z_rot = x * np.sin(angle_rad) + z * np.cos(angle_rad)
+            
+            # 移动到中心位置
+            x_final = x_rot + center[0]
+            y_final = y + center[1]
+            z_final = z_rot + center[2]
+            
+            return x_final, y_final, z_final
         
         # 创建一个图形对象
         fig = go.Figure()
@@ -865,61 +766,121 @@ def visualize_with_plotly_simple(df_3d, output_path):
             normalized = (volume - min_vol) / (max_vol - min_vol) if max_vol > min_vol else 0.5
             return normalized
         
-        # 添加单个气泡
+        # 添加单个气泡（使用椭球体）
         if not df_single.empty:
-            # 使用体积值创建颜色映射
-            colors = df_single['volume(mm^3)'].apply(map_volume_to_color)
+            for idx, row in df_single.iterrows():
+                # 获取椭球体参数
+                center = (row['x'], row['y'], row['z'])
+                a, b, c = row['a'], row['b'], row['c']
+                angle_rad = row['angle_rad']
+                
+                # 创建椭球体表面
+                x, y, z = create_ellipsoid_mesh(center, a, b, c, angle_rad)
+                
+                # 基于体积确定颜色
+                color_val = map_volume_to_color(row['volume(mm^3)'])
+                
+                # 添加椭球体表面
+                fig.add_trace(
+                    go.Surface(
+                        x=x, y=y, z=z,
+                        colorscale=[[0, px.colors.sequential.Viridis[0]], 
+                                    [1, px.colors.sequential.Viridis[-1]]],
+                        surfacecolor=np.ones_like(x) * color_val,
+                        opacity=0.8,
+                        showscale=False,
+                        hoverinfo='skip',
+                        name=f'气泡 {int(row["bubble_id"])}',
+                    )
+                )
+                
+                # 添加中心点用于悬停信息显示
+                fig.add_trace(
+                    go.Scatter3d(
+                        x=[row['x']], y=[row['y']], z=[row['z']],
+                        mode='markers',
+                        marker=dict(
+                            size=2,
+                            color='rgba(0,0,0,0)',
+                        ),
+                        hovertext=f"ID: {int(row['bubble_id'])}<br>X: {row['x']:.2f}, Y: {row['y']:.2f}, Z: {row['z']:.2f}<br>体积: {row['volume(mm^3)']:.2f} mm³<br>尺寸: {row['width']:.1f} × {row['height']:.1f}",
+                        hoverinfo='text',
+                        showlegend=False
+                    )
+                )
             
+            # 添加一个示例点用于颜色条
             fig.add_trace(
                 go.Scatter3d(
-                    x=df_single['x'],
-                    y=df_single['y'],
-                    z=df_single['z'],
+                    x=[None], y=[None], z=[None],
                     mode='markers',
-                    name='单个气泡',
                     marker=dict(
-                        size=df_single['volume(mm^3)'].apply(map_volume_to_size),
-                        color=colors,
+                        size=0,
+                        color=[volume_min, volume_max],
                         colorscale=volume_colorscale,
-                        colorbar=dict(title="体积 (mm³)"),
+                        colorbar=dict(title="Volume (mm³)"),
                         showscale=True,
-                        opacity=0.85,
-                        symbol='circle',
-                        line=dict(width=0.5, color='rgba(40,40,40,0.5)')
                     ),
-                    hovertext=df_single.apply(
-                        lambda row: f"ID: {int(row['bubble_id'])}<br>X: {row['x']:.2f}, Y: {row['y']:.2f}, Z: {row['z']:.2f}<br>体积: {row['volume(mm^3)']:.2f} mm³<br>尺寸: {row['width']:.1f} × {row['height']:.1f}",
-                        axis=1
-                    ),
-                    hoverinfo='text'
+                    name='Single Bubble',
                 )
             )
         
-        # 添加重叠气泡
+        # 添加重叠气泡（使用椭球体）
         if not df_overlap.empty:
-            # 使用体积值创建颜色映射
-            colors_overlap = df_overlap['volume(mm^3)'].apply(map_volume_to_color)
-            
+            for idx, row in df_overlap.iterrows():
+                # 获取椭球体参数
+                center = (row['x'], row['y'], row['z'])
+                a, b, c = row['a'], row['b'], row['c']
+                angle_rad = row['angle_rad']
+                
+                # 创建椭球体表面
+                x, y, z = create_ellipsoid_mesh(center, a, b, c, angle_rad)
+                
+                # 基于体积确定颜色
+                color_val = map_volume_to_color(row['volume(mm^3)'])
+                
+                # 添加椭球体表面
+                fig.add_trace(
+                    go.Surface(
+                        x=x, y=y, z=z,
+                        colorscale=[[0, 'rgba(255,200,200,0.7)'], 
+                                    [1, 'rgba(255,0,0,0.7)']],
+                        surfacecolor=np.ones_like(x) * color_val,
+                        opacity=0.7,
+                        showscale=False,
+                        hoverinfo='skip',
+                        name=f'重叠气泡 {int(row["bubble_id"])}',
+                    )
+                )
+                
+                # 添加中心点用于悬停信息显示
+                fig.add_trace(
+                    go.Scatter3d(
+                        x=[row['x']], y=[row['y']], z=[row['z']],
+                        mode='markers',
+                        marker=dict(
+                            size=2,
+                            color='rgba(0,0,0,0)',
+                        ),
+                        hovertext=f"ID: {int(row['bubble_id'])}<br>X: {row['x']:.2f}, Y: {row['y']:.2f}, Z: {row['z']:.2f}<br>体积: {row['volume(mm^3)']:.2f} mm³<br>尺寸: {row['width']:.1f} × {row['height']:.1f}",
+                        hoverinfo='text',
+                        showlegend=False
+                    )
+                )
+                
+            # 添加一个示例点用于颜色条
             fig.add_trace(
                 go.Scatter3d(
-                    x=df_overlap['x'],
-                    y=df_overlap['y'],
-                    z=df_overlap['z'],
+                    x=[None], y=[None], z=[None],
                     mode='markers',
-                    name='重叠气泡',
                     marker=dict(
-                        size=df_overlap['volume(mm^3)'].apply(map_volume_to_size),
-                        color=colors_overlap,
+                        size=0,
+                        color=[volume_min, volume_max],
                         colorscale='Reds',
-                        opacity=0.7,
-                        symbol='circle',
-                        line=dict(width=0.5, color='rgba(100,10,10,0.6)')
+                        colorbar=dict(title="Overlap Bubble Volume (mm³)"),
+                        showscale=True,
                     ),
-                    hovertext=df_overlap.apply(
-                        lambda row: f"ID: {int(row['bubble_id'])}<br>X: {row['x']:.2f}, Y: {row['y']:.2f}, Z: {row['z']:.2f}<br>体积: {row['volume(mm^3)']:.2f} mm³<br>尺寸: {row['width']:.1f} × {row['height']:.1f}",
-                        axis=1
-                    ),
-                    hoverinfo='text'
+                    name='Overlap Bubble',
                 )
             )
         
@@ -928,7 +889,7 @@ def visualize_with_plotly_simple(df_3d, output_path):
             scene=dict(
                 xaxis=dict(
                     range=[0, IMAGE_WIDTH],
-                    title='X轴',
+                    title='X-axis (Width)',
                     backgroundcolor="rgba(230, 230, 230, 0.1)",
                     gridcolor="rgba(150, 150, 150, 0.1)",
                     showbackground=True,
@@ -936,7 +897,7 @@ def visualize_with_plotly_simple(df_3d, output_path):
                 ),
                 yaxis=dict(
                     range=[0, DEPTH_RANGE],
-                    title='Y轴(深度)',
+                    title='Y-axis (Depth)',
                     backgroundcolor="rgba(230, 230, 240, 0.1)",
                     gridcolor="rgba(150, 150, 150, 0.1)",
                     showbackground=True,
@@ -944,20 +905,22 @@ def visualize_with_plotly_simple(df_3d, output_path):
                 ),
                 zaxis=dict(
                     range=[0, IMAGE_HEIGHT],
-                    title='Z轴',
+                    title='Z-axis (Height)',
                     backgroundcolor="rgba(230, 230, 230, 0.1)",
                     gridcolor="rgba(150, 150, 150, 0.1)",
                     showbackground=True,
                     zerolinecolor="rgba(100, 100, 100, 0.5)"
                 ),
-                aspectmode='cube',
+                aspectratio=dict(x=IMAGE_WIDTH, y=DEPTH_RANGE, z=IMAGE_HEIGHT),  # 确保三个坐标轴比例相等
                 camera=dict(
-                    eye=dict(x=1.8, y=1.8, z=1.8),
-                    up=dict(x=0, y=0, z=1)
+                    eye=dict(x=0, y=-DEPTH_RANGE*2, z=0),  # 增大x和y方向的视距，以便能看到整个模型
+                    # center=dict(x=IMAGE_WIDTH/2, y=DEPTH_RANGE/2, z=IMAGE_HEIGHT/2),  # 焦点保持在模型中心
+                    up=dict(x=0, y=0, z=1),  # 保持z轴向上
+                    projection=dict(type='orthographic')  # 保持正交投影
                 ),
             ),
             title=dict(
-                text='气泡流场三维可视化',
+                text='Bubbly Flow Field 3D Visualization',
                 font=dict(size=20, color='rgba(0,0,0,0.85)'),
                 x=0.5
             ),
@@ -982,7 +945,7 @@ def visualize_with_plotly_simple(df_3d, output_path):
         
         # 添加注释信息
         fig.add_annotation(
-            text=f"总气泡数: {len(df_3d)} | 单个气泡: {len(df_single)} | 重叠气泡: {len(df_overlap)}",
+            text=f"Total Bubbles: {len(df_3d)} | Single Bubble: {len(df_single)} | Overlap Bubble: {len(df_overlap)}",
             xref="paper", yref="paper",
             x=0.5, y=1.01,
             showarrow=False,
@@ -994,7 +957,7 @@ def visualize_with_plotly_simple(df_3d, output_path):
         )
         
         # 保存为HTML文件
-        html_path = f"{output_path}/气泡流场可视化.html"
+        html_path = f"{output_path}/Bubbly Flow Field Visualization.html"
         fig.write_html(html_path, include_plotlyjs='cdn', full_html=True, auto_open=False)
         print(f"单一3D可视化已保存到 {html_path}")
         
@@ -1044,8 +1007,6 @@ def main():
     # 可视化选项 - 添加Plotly多视角可视化
     visualization_methods = {
         "PyVista 3D": lambda: visualize_bubbles_3d(df_3d, visualizations_dir),
-        "Matplotlib 3D": lambda: visualize_with_matplotlib(df_3d, visualizations_dir),
-        "2D投影": lambda: visualize_2d_projections(df_3d, visualizations_dir),
         "密度估计": lambda: visualize_density_estimation(df_3d, visualizations_dir),
         "Plotly单一": lambda: visualize_with_plotly_simple(df_3d, visualizations_dir)
     }
