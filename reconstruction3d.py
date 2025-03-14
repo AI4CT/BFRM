@@ -373,7 +373,7 @@ def visualize_bubbles_3d(df_3d, output_path):
     norm_volumes = (volumes - vol_min) / (vol_max - vol_min) if vol_max > vol_min else volumes * 0 + 0.5
     
     # 创建椭球体三维表面点的函数
-    def create_ellipsoid_mesh(center, a, b, c, angle_rad, resolution=50):
+    def create_ellipsoid_mesh(center, a, b, c, angle_rad, resolution=20):
         """创建椭球体网格点 - 简化版本
         
         Args:
@@ -515,7 +515,12 @@ def visualize_bubbles_3d(df_3d, output_path):
     # 恢复透视投影
     # plotter.disable_parallel_projection()
     # 保存为STL文件
-    stl_path = f"{output_path}/3d_bubbles.stl"
+    # 从输出路径中提取帧号
+    frame_num = int(os.path.basename(output_path).split('_')[1])
+    # 计算时间（每帧0.0001秒）
+    time_in_seconds = frame_num * 0.0001
+    # 设置带有时间戳的STL文件路径
+    stl_path = f"{os.path.dirname(output_path)}/bubbly_flow_{time_in_seconds:.4f}.stl"
     
     try:
         # 合并所有气泡网格
@@ -531,28 +536,6 @@ def visualize_bubbles_3d(df_3d, output_path):
     
     # 关闭plotter
     plotter.close()
-
-def save_frame_3d_data(df_3d, output_path, frame_num):
-    """
-    将气泡三维坐标和椭圆信息保存到以当前帧数命名的CSV文件中
-    
-    参数:
-        df_3d: 包含气泡三维信息的DataFrame
-        output_path: 输出路径
-        frame_num: 当前帧号
-    """
-    # 创建专门存放流场三维信息的文件夹
-    flow_3d_dir = os.path.join(output_path, "flow_3d_data")
-    os.makedirs(flow_3d_dir, exist_ok=True)
-    
-    # 创建以当前帧数命名的CSV文件路径
-    csv_path = os.path.join(flow_3d_dir, f"frame_{frame_num:04d}.csv")
-    
-    # 保存DataFrame到CSV文件
-    df_3d.to_csv(csv_path, index=False)
-    print(f"帧 {frame_num} 的3D流场数据已保存到 {csv_path}")
-    
-    return flow_3d_dir
 
 def export_bubble_info(df_3d, output_path, frame_num):
     """导出所有气泡的详细信息到单个CSV文件，文件名为当前帧号"""
@@ -835,7 +818,7 @@ def visualize_with_plotly_simple(df_3d, output_path):
                     b=row['b'],
                     c=row['c'],
                     angle_rad=row['angle_rad'],
-                    resolution=12  # 降低分辨率以提高性能
+                    resolution=20  # 降低分辨率以提高性能
                 )
                 
                 # 添加椭球体的网格
@@ -1039,7 +1022,7 @@ def main():
     
     # 读取第一帧数据用于处理和可视化
     first_frame_path = os.path.join(input_dir, "frame_0001.csv")
-    frame_num = 0  # 当前处理的帧号
+    frame_num = 1  # 当前处理的帧号
     
     if not os.path.exists(first_frame_path):
         print(f"错误: 文件 {first_frame_path} 不存在")
@@ -1061,7 +1044,7 @@ def main():
     print(f"第 {frame_num} 帧的气泡详细信息已导出到: {bubble_info_dir}")
     
     # 创建额外的可视化目录
-    visualizations_dir = os.path.join(output_dir, f"visualizations/frame_{frame_num:04d}")
+    visualizations_dir = os.path.join(output_dir, f"visualizations_3D/frame_{frame_num:04d}")
     os.makedirs(visualizations_dir, exist_ok=True)
     
     # 可视化选项 - 添加Plotly多视角可视化

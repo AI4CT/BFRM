@@ -1,16 +1,8 @@
 import os
-import sys
 import time
 import cv2
 import numpy as np
-import datetime
-import threading
-import queue
-import re
-import csv  # 添加CSV模块导入
-from collections import deque, defaultdict
-import concurrent.futures
-import shutil
+import csv
 from PyQt6.QtWidgets import (QMainWindow, QFileDialog, QPushButton, QLabel, 
                             QVBoxLayout, QWidget, QHBoxLayout, QProgressBar, 
                             QMessageBox, QMenuBar, QMenu, QStatusBar,
@@ -20,13 +12,6 @@ from PyQt6.QtWidgets import (QMainWindow, QFileDialog, QPushButton, QLabel,
 from PyQt6.QtCore import QTimer, Qt
 from PyQt6.QtGui import (QMovie, QPalette, QColor, QFont, QPixmap, QImage, 
                         QIcon, QAction, QActionGroup)
-import imageio
-
-from image_processor import process_images
-from video_processor import process_video, get_video_info
-from animation_exporter import export_animation
-from ellipse_fitting import draw_ellipse_on_image, draw_bounding_box_on_image, draw_rotated_rectangle
-from reconstruction3d import reconstruct_3d
 
 # 新增气泡信息窗口类
 class BubbleInfoWindow(QMainWindow):
@@ -35,7 +20,7 @@ class BubbleInfoWindow(QMainWindow):
         
         # 设置窗口标题和图标
         self.setWindowTitle("气泡信息详情")
-        self.setWindowIcon(QIcon("bubble.ico"))
+        self.setWindowIcon(QIcon("icons/bubble.ico"))
         
         # 设置窗口大小
         self.resize(800, 600)
@@ -215,7 +200,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("气泡流重建模型")
         
         # 设置应用程序图标
-        self.setWindowIcon(QIcon("bubble.ico"))
+        self.setWindowIcon(QIcon("icons/bubble.ico"))
         
         # 初始化变量
         self.frames = []  # 存储视频帧
@@ -631,7 +616,7 @@ class MainWindow(QMainWindow):
         if title == "简化气泡流场":
             # 创建3D画布
             try:
-                self.canvas_3d = reconstruct_3d(None, None)
+                # self.canvas_3d = reconstruct_3d(None, None)
                 self.canvas_3d.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
                 self.canvas_3d.setMinimumSize(50, 50)
                 layout.addWidget(self.canvas_3d, 1)
@@ -1651,7 +1636,7 @@ class MainWindow(QMainWindow):
         # 启动预处理线程
         self.start_frame_preprocessing()
         
-        self.add_log(f"开始播放视频，速度: {self.playback_speed}x，帧间隔: {interval}ms")
+        self.add_log(f"开始播放视频，速度: {self.playback_speed}x,帧间隔: {interval}ms")
     
     def pause_playback(self):
         """暂停播放视频"""
@@ -1940,10 +1925,10 @@ class MainWindow(QMainWindow):
                 self.device = 'cpu'
                 
             # 加载模型并指定设备
-            self.model = YOLO(r'C:\codebase\yolo\model\yolo11n-obb.pt')
+            self.model = YOLO(r'C:\codebase\yolo\model\yolo11x-obb.pt')
             self.model.to(self.device)
             
-            self.add_log(f"YOLO模型初始化完成，使用设备: {self.device}")
+            self.add_log(f"YOLO模型初始化完成,使用设备: {self.device}")
             return True
         except Exception as e:
             self.add_log(f"YOLO模型初始化失败: {str(e)}")
@@ -2043,7 +2028,10 @@ class MainWindow(QMainWindow):
                         )[0, 0]))
                     
                     # 计算体积
-                    volume = (w * w * h * 0.080128 ** 3)
+                    volume = (4/3) * np.pi * w * h * max(w, h) * 0.080128 ** 3 / 8
+                    
+                    # 获取类别信息
+                    class_id = int(r.obb.cls[i])
                     
                     # 存储气泡信息
                     frame_info[bubble_id] = {
@@ -2054,12 +2042,15 @@ class MainWindow(QMainWindow):
                         'height': h,
                         'angle': angle,
                         'speed': speed,
-                        'volume': volume
+                        'volume': volume,
+                        'class_id': class_id,
+                        'type': 'single' if class_id == 0 else 'overlap',
+                        'confidence': r.obb.conf[i]
                     }
                     
                     # 绘制检测框
                     # base_color = self.trajectory_colors.get(bubble_id, (0, 0, 192))
-                    base_color = (0, 0, 192) if r.obb.cls[i] else (53, 130, 84)
+                    base_color = (0, 0, 192) if class_id else (53, 130, 84)
                     cv2.polylines(processed_frame, [np.asarray(box, dtype=int)], True, base_color, lw)
             
             # 检查哪些气泡在当前帧中消失了
@@ -2315,10 +2306,11 @@ class MainWindow(QMainWindow):
                 writer = csv.writer(f)
                 
                 # 写入表头
-                writer.writerow(['气泡ID', 'X坐标', 'Y坐标', '宽度', '高度', '角度', '速度(m/s)', '体积'])
+                writer.writerow(['bubble_id', 'x', 'y', 'width', 'height', 'angle(degree)', 'speed(m/s)', 'volume(mm^3)', 'type', 'confidence'])
                 
                 # 写入每个气泡的信息
                 for bubble_id, info in frame_info.items():
+                    
                     writer.writerow([
                         info['id'],
                         f"{info['x']:.2f}",
@@ -2327,7 +2319,9 @@ class MainWindow(QMainWindow):
                         f"{info['height']:.2f}",
                         f"{info['angle']:.2f}",
                         f"{info['speed']:.4f}",
-                        f"{info['volume']:.4f}"
+                        f"{info['volume']:.4f}",
+                        info['type'],
+                        f"{info['confidence']:.4f}"
                     ])
                     
             self.add_log(f"已保存帧 {frame_index} 的气泡信息到 {csv_file}")

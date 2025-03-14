@@ -1,16 +1,8 @@
 import os
-import sys
 import time
 import cv2
 import numpy as np
-import datetime
-import threading
-import queue
-import re
-import csv  # 添加CSV模块导入
-from collections import deque, defaultdict
-import concurrent.futures
-import shutil
+import csv
 from PyQt6.QtWidgets import (QMainWindow, QFileDialog, QPushButton, QLabel, 
                             QVBoxLayout, QWidget, QHBoxLayout, QProgressBar, 
                             QMessageBox, QMenuBar, QMenu, QStatusBar,
@@ -20,13 +12,6 @@ from PyQt6.QtWidgets import (QMainWindow, QFileDialog, QPushButton, QLabel,
 from PyQt6.QtCore import QTimer, Qt
 from PyQt6.QtGui import (QMovie, QPalette, QColor, QFont, QPixmap, QImage, 
                         QIcon, QAction, QActionGroup)
-import imageio
-
-from image_processor import process_images
-from video_processor import process_video, get_video_info
-from animation_exporter import export_animation
-from ellipse_fitting import draw_ellipse_on_image, draw_bounding_box_on_image, draw_rotated_rectangle
-from reconstruction3d import reconstruct_3d
 
 # 新增气泡信息窗口类
 class BubbleInfoWindow(QMainWindow):
@@ -631,7 +616,7 @@ class MainWindow(QMainWindow):
         if title == "简化气泡流场":
             # 创建3D画布
             try:
-                self.canvas_3d = reconstruct_3d(None, None)
+                # self.canvas_3d = reconstruct_3d(None, None)
                 self.canvas_3d.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
                 self.canvas_3d.setMinimumSize(50, 50)
                 layout.addWidget(self.canvas_3d, 1)
@@ -1940,7 +1925,7 @@ class MainWindow(QMainWindow):
                 self.device = 'cpu'
                 
             # 加载模型并指定设备
-            self.model = YOLO(r'C:\codebase\yolo\model\yolo11l-obb.pt')
+            self.model = YOLO(r'C:\codebase\yolo\model\yolo11x-obb.pt')
             self.model.to(self.device)
             
             self.add_log(f"YOLO模型初始化完成,使用设备: {self.device}")
@@ -2043,7 +2028,7 @@ class MainWindow(QMainWindow):
                         )[0, 0]))
                     
                     # 计算体积
-                    volume = (w * w * h * 0.080128 ** 3)
+                    volume = (4/3) * np.pi * w * h * max(w, h) * 0.080128 ** 3 / 8
                     
                     # 获取类别信息
                     class_id = int(r.obb.cls[i])

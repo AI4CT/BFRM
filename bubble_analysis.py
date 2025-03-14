@@ -420,18 +420,18 @@ class BubbleAnalyzer:
         if self.video_frames is None:
             print("No video data provided, cannot extract bubble regions")
             return
-
-        # Create subdirectories for each bubble type
-        single_dir = os.path.join(self.bubble_crops_dir, 'single')
-        overlap_dir = os.path.join(self.bubble_crops_dir, 'overlap')
-        os.makedirs(single_dir, exist_ok=True)
-        os.makedirs(overlap_dir, exist_ok=True)
         
         # Create bubble ID directories (vertical storage)
         bubble_id_dir = os.path.join(self.bubble_crops_dir, 'bubble_id')
         os.makedirs(bubble_id_dir, exist_ok=True)
         frame_id_dir = os.path.join(self.bubble_crops_dir, 'frame_id')
         os.makedirs(frame_id_dir, exist_ok=True)
+
+        # Create subdirectories for each bubble type
+        single_dir = os.path.join(self.bubble_crops_dir, 'classification/single')
+        overlap_dir = os.path.join(self.bubble_crops_dir, 'classification/overlap')
+        os.makedirs(single_dir, exist_ok=True)
+        os.makedirs(overlap_dir, exist_ok=True)
         
         # Track all bubble IDs and their information
         all_bubbles = {}  # For storing information of all bubbles, indexed by ID
@@ -516,16 +516,37 @@ class BubbleAnalyzer:
                     # Get axis-aligned bounding box
                     x_min, y_min, x_max, y_max = self.get_rotated_rect_bbox(corners)
                     
-                    # Ensure coordinates are within image bounds
-                    h, w = frame.shape[:2]
-                    x_min = max(0, x_min)
-                    y_min = max(0, y_min)
-                    x_max = min(w - 1, x_max)
-                    y_max = min(h - 1, y_max)
+                    # Calculate the square size (use the larger dimension)
+                    square_size = max(x_max - x_min, y_max - y_min)
                     
-                    # Extract bubble region
-                    if x_min < x_max and y_min < y_max:
-                        bubble_region = frame[y_min:y_max, x_min:x_max]
+                    # Calculate new square coordinates centered on the bubble
+                    square_x_min = int(x - square_size / 2)
+                    square_y_min = int(y - square_size / 2)
+                    square_x_max = square_x_min + square_size
+                    square_y_max = square_y_min + square_size
+                    
+                    # Get image dimensions
+                    h, w = frame.shape[:2]
+                    
+                    # Create a white square canvas
+                    bubble_region = np.ones((square_size, square_size, 3), dtype=np.uint8) * 255
+                    
+                    # Calculate valid source and destination regions for copying
+                    # Source region (from original frame)
+                    src_x_min = max(0, square_x_min)
+                    src_y_min = max(0, square_y_min)
+                    src_x_max = min(w, square_x_max)
+                    src_y_max = min(h, square_y_max)
+                    
+                    # Destination region (on white canvas)
+                    dst_x_min = max(0, -square_x_min)
+                    dst_y_min = max(0, -square_y_min)
+                    dst_x_max = dst_x_min + (src_x_max - src_x_min)
+                    dst_y_max = dst_y_min + (src_y_max - src_y_min)
+                    
+                    # Copy the valid part of the frame to the white canvas
+                    if src_x_min < src_x_max and src_y_min < src_y_max:
+                        bubble_region[dst_y_min:dst_y_max, dst_x_min:dst_x_max] = frame[src_y_min:src_y_max, src_x_min:src_x_max]
                         
                         # Save bubble image
                         bubble_image_path = os.path.join(frame_dir, f'{bubble_type}_{bubble_id:04d}.png')
@@ -579,16 +600,37 @@ class BubbleAnalyzer:
                     # Get axis-aligned bounding box
                     x_min, y_min, x_max, y_max = self.get_rotated_rect_bbox(corners)
                     
-                    # Ensure coordinates are within image bounds
-                    h, w = frame.shape[:2]
-                    x_min = max(0, x_min)
-                    y_min = max(0, y_min)
-                    x_max = min(w - 1, x_max)
-                    y_max = min(h - 1, y_max)
+                    # Calculate the square size (use the larger dimension)
+                    square_size = max(x_max - x_min, y_max - y_min)
                     
-                    # Extract bubble region
-                    if x_min < x_max and y_min < y_max:
-                        bubble_region = frame[y_min:y_max, x_min:x_max]
+                    # Calculate new square coordinates centered on the bubble
+                    square_x_min = int(x - square_size / 2)
+                    square_y_min = int(y - square_size / 2)
+                    square_x_max = square_x_min + square_size
+                    square_y_max = square_y_min + square_size
+                    
+                    # Get image dimensions
+                    h, w = frame.shape[:2]
+                    
+                    # Create a white square canvas
+                    bubble_region = np.ones((square_size, square_size, 3), dtype=np.uint8) * 255
+                    
+                    # Calculate valid source and destination regions for copying
+                    # Source region (from original frame)
+                    src_x_min = max(0, square_x_min)
+                    src_y_min = max(0, square_y_min)
+                    src_x_max = min(w, square_x_max)
+                    src_y_max = min(h, square_y_max)
+                    
+                    # Destination region (on white canvas)
+                    dst_x_min = max(0, -square_x_min)
+                    dst_y_min = max(0, -square_y_min)
+                    dst_x_max = dst_x_min + (src_x_max - src_x_min)
+                    dst_y_max = dst_y_min + (src_y_max - src_y_min)
+                    
+                    # Copy the valid part of the frame to the white canvas
+                    if src_x_min < src_x_max and src_y_min < src_y_max:
+                        bubble_region[dst_y_min:dst_y_max, dst_x_min:dst_x_max] = frame[src_y_min:src_y_max, src_x_min:src_x_max]
                         
                         # Save bubble image
                         bubble_image_path = os.path.join(bubble_dir, f'frame_{frame_number:04d}.png')
@@ -932,24 +974,24 @@ def main():
     
     # Analyze data and create statistics plots
     print("\n===== Step 1: Analyze Data =====")
-    # analyzer.analyze_all_frames()
+    analyzer.analyze_all_frames()
     
     print("\n===== Step 2: Create Static Statistics Plot =====")
-    # analyzer.create_count_plot()
+    analyzer.create_count_plot()
     
     print("\n===== Step 3: Create Dynamic Statistics Plot =====")
-    # analyzer.create_count_animation()
+    analyzer.create_count_animation()
     
     # Visualize detection results and trajectories
     print("\n===== Step 4: Visualize Detection Results =====")
-    # analyzer.visualize_detection_results()
+    analyzer.visualize_detection_results()
     
     print("\n===== Step 5: Visualize Bubble Trajectories =====")
-    # analyzer.visualize_bubble_trajectories(max_frames=100)  # Only show the trajectory of each bubble for the last 100 frames
+    analyzer.visualize_bubble_trajectories(max_frames=100)  # Only show the trajectory of each bubble for the last 100 frames
     
     # Extract bubble regions
     print("\n===== Step 6: Extract Bubble Regions =====")
-    analyzer.extract_bubble_regions()
+    # analyzer.extract_bubble_regions()
     
     # Output summary information
     print("\n===== Bubble Flow Analysis Completed =====")
