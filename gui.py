@@ -232,9 +232,6 @@ class MainWindow(QMainWindow):
         self.processed_frames_cache = {}  # 处理后的帧缓存
         self.is_preprocessing = False  # 是否正在预处理
         
-        # 创建结果文件夹
-        self.create_result_folder()
-        
         # 初始化UI
         self.init_ui()
         
@@ -243,13 +240,14 @@ class MainWindow(QMainWindow):
         self.add_log("提示: 可以通过'选择视频'按钮直接加载视频文件")
         self.add_log("提示: 视频加载后可以使用滑动条控制播放位置")
         self.add_log("提示: 可以使用'导出视频'按钮将处理后的视频保存")
+        
     def create_result_folder(self):
         timestamp = time.strftime("%Y%m%d_%H%M%S")
         folder = os.path.join(self.result_root, timestamp)
         os.makedirs(folder, exist_ok=True)
         
         # 创建CSV子文件夹
-        csv_folder = os.path.join(folder, "bubble_csv")
+        csv_folder = os.path.join(folder, "1-bubble_csv")
         os.makedirs(csv_folder, exist_ok=True)
         
         # 设置当前结果文件夹
@@ -2292,7 +2290,7 @@ class MainWindow(QMainWindow):
             os.makedirs(self.result_folder)
             
         # 创建CSV子文件夹
-        csv_folder = os.path.join(self.result_folder, "bubble_csv")
+        csv_folder = os.path.join(self.result_folder, "1-bubble_csv")
         if not os.path.exists(csv_folder):
             os.makedirs(csv_folder)
             
