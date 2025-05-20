@@ -119,7 +119,7 @@ class RealtimeMainWindow(QMainWindow):
         self.setWindowTitle("BFRM - Realtime Bubble Flow Reconstruction v2.0.0")
         self.setGeometry(100, 100, 1400, 800)
         self.setMinimumSize(1000, 600)
-        icon_path = os.path.join("icons", "bfrm_icon.ico")
+        icon_path = os.path.join("icons", "bubble.ico")
         if os.path.exists(icon_path):
             self.setWindowIcon(QIcon(icon_path))
         self.create_menu_bar()
@@ -132,9 +132,10 @@ class RealtimeMainWindow(QMainWindow):
         # 只保留左侧面板
         left_panel = self.create_left_panel()
         main_layout.addWidget(left_panel)
+        # 先添加右上角按钮控件，确保按钮已初始化
+        self.add_top_right_controls(main_layout)
         self.create_status_bar()
         self.update_button_states(False)
-        
         # 初始化所有显示数据
         self.init_display_values()
         
@@ -268,17 +269,33 @@ class RealtimeMainWindow(QMainWindow):
         toolbar.addAction(QIcon("icons/open.png"), '打开视频', self.open_video)
         toolbar.addSeparator()
         
-        # 处理控制
-        self.play_action = toolbar.addAction(QIcon("icons/play.png"), '开始', self.toggle_processing)
-        self.pause_action_tb = toolbar.addAction(QIcon("icons/pause.png"), '暂停', self.pause_processing)
-        self.stop_action = toolbar.addAction(QIcon("icons/stop.png"), '停止', self.stop_processing)
+        # 处理控制（右对齐）
+        spacer = QWidget()
+        spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        toolbar.addWidget(spacer)
+        
+        # 右侧控制按钮
+        self.play_action_btn = QPushButton("开始")
+        self.play_action_btn.setIcon(QIcon("icons/play.png"))
+        self.play_action_btn.clicked.connect(self.toggle_processing)
+        toolbar.addWidget(self.play_action_btn)
+        self.pause_action_btn = QPushButton("暂停")
+        self.pause_action_btn.setIcon(QIcon("icons/pause.png"))
+        self.pause_action_btn.clicked.connect(self.pause_processing)
+        toolbar.addWidget(self.pause_action_btn)
+        self.stop_action_btn = QPushButton("停止")
+        self.stop_action_btn.setIcon(QIcon("icons/stop.png"))
+        self.stop_action_btn.clicked.connect(self.stop_processing)
+        toolbar.addWidget(self.stop_action_btn)
         
         toolbar.addSeparator()
-        
         # 导出
         toolbar.addAction(QIcon("icons/export.png"), '导出STL', self.export_stl)
         
         # 设置初始状态
+        self.pause_action_tb = self.pause_action_btn
+        self.stop_action = self.stop_action_btn
+        self.play_action = self.play_action_btn
         self.pause_action_tb.setEnabled(False)
         self.stop_action.setEnabled(False)
     
@@ -313,52 +330,6 @@ class RealtimeMainWindow(QMainWindow):
         file_layout.addWidget(self.video_info_label)
         
         control_layout.addWidget(file_group)
-        
-        # 处理控制
-        process_group = QGroupBox("处理控制")
-        process_layout = QVBoxLayout(process_group)
-        
-        # 控制按钮
-        button_layout = QHBoxLayout()
-        self.start_btn = QPushButton("开始处理")
-        self.start_btn.setIcon(QIcon("icons/play.png"))
-        self.start_btn.clicked.connect(self.toggle_processing)
-        self.start_btn.setEnabled(False)  # 初始禁用
-        
-        self.pause_btn = QPushButton("暂停")
-        self.pause_btn.setIcon(QIcon("icons/pause.png"))
-        self.pause_btn.clicked.connect(self.pause_processing)
-        self.pause_btn.setEnabled(False)
-        
-        self.stop_btn = QPushButton("停止")
-        self.stop_btn.setIcon(QIcon("icons/stop.png"))
-        self.stop_btn.clicked.connect(self.stop_processing)
-        self.stop_btn.setEnabled(False)
-        
-        button_layout.addWidget(self.start_btn)
-        button_layout.addWidget(self.pause_btn)
-        button_layout.addWidget(self.stop_btn)
-        process_layout.addLayout(button_layout)
-        
-        # 处理状态
-        status_layout = QHBoxLayout()
-        status_layout.addWidget(QLabel("处理状态:"))
-        self.process_status_label = QLabel("未开始")
-        self.process_status_label.setStyleSheet("font-weight: bold; color: #888;")
-        status_layout.addWidget(self.process_status_label)
-        status_layout.addStretch()
-        
-        status_layout.addWidget(QLabel("帧:"))
-        self.bubble_count_status_label = QLabel("0")
-        status_layout.addWidget(self.bubble_count_status_label)
-        
-        status_layout.addWidget(QLabel("FPS:"))
-        self.fps_status_label = QLabel("0.0")
-        status_layout.addWidget(self.fps_status_label)
-        
-        process_layout.addLayout(status_layout)
-        
-        control_layout.addWidget(process_group)
         
         left_layout.addWidget(control_group)
         
@@ -412,54 +383,53 @@ class RealtimeMainWindow(QMainWindow):
         self.process_status_label = QLabel("未开始")
         self.status_bar.addWidget(self.process_status_label)
         
-        # FPS显示
-        self.fps_status_label = QLabel("FPS: 0.0")
+        # FPS显示（两位小数）
+        self.fps_status_label = QLabel("FPS: 0.00")
         self.status_bar.addPermanentWidget(self.fps_status_label)
         
-        # 气泡计数
-        self.bubble_count_status_label = QLabel("气泡: 0")
-        self.status_bar.addPermanentWidget(self.bubble_count_status_label)
+        # 处理时间显示
+        self.processing_time_label = QLabel("处理时间: 0.0ms")
+        self.status_bar.addPermanentWidget(self.processing_time_label)
         
-        # 时间显示
-        self.time_status_label = QLabel("00:00:00")
+        # 帧索引显示
+        self.frame_idx_label = QLabel("帧: 0")
+        self.status_bar.addPermanentWidget(self.frame_idx_label)
+        
+        # 时间显示（总处理时长）
+        self.time_status_label = QLabel("总处理时长: 0.0s")
         self.status_bar.addPermanentWidget(self.time_status_label)
     
     def update_button_states(self, processing):
         """更新按钮状态"""
-        # 主控制按钮
+        # 工具栏按钮
         if processing:
-            self.start_btn.setText("停止处理")
-            self.start_btn.setIcon(QIcon("icons/stop.png"))
-            self.pause_btn.setEnabled(True)
-            self.stop_btn.setEnabled(True)
-            
-            # 工具栏按钮
             self.play_action.setIcon(QIcon("icons/stop.png"))
             self.play_action.setText("停止")
             self.pause_action_tb.setEnabled(True)
             self.stop_action.setEnabled(True)
-            
+            # 右上角按钮
+            self.play_action_btn.setText("停止")
+            self.play_action_btn.setIcon(QIcon("icons/stop.png"))
+            self.pause_action_btn.setEnabled(True)
+            self.stop_action_btn.setEnabled(True)
             # 菜单动作
             self.start_stop_action.setText("停止处理(&S)")
             self.start_stop_action.setIcon(QIcon("icons/stop.png"))
             self.pause_action.setEnabled(True)
         else:
-            self.start_btn.setText("开始处理")
-            self.start_btn.setIcon(QIcon("icons/play.png"))
-            self.pause_btn.setEnabled(False)
-            self.stop_btn.setEnabled(False)
-            
-            # 工具栏按钮
             self.play_action.setIcon(QIcon("icons/play.png"))
             self.play_action.setText("开始")
             self.pause_action_tb.setEnabled(False)
             self.stop_action.setEnabled(False)
-            
+            # 右上角按钮
+            self.play_action_btn.setText("开始")
+            self.play_action_btn.setIcon(QIcon("icons/play.png"))
+            self.pause_action_btn.setEnabled(False)
+            self.stop_action_btn.setEnabled(False)
             # 菜单动作
             self.start_stop_action.setText("开始处理(&S)")
             self.start_stop_action.setIcon(QIcon("icons/play.png"))
             self.pause_action.setEnabled(False)
-        
         # 文件选择控制
         self.browse_btn.setEnabled(not processing)
     
@@ -475,8 +445,7 @@ class RealtimeMainWindow(QMainWindow):
         """初始化所有显示数据为默认值"""
         # 设置初始状态文本
         self.process_status_label.setText("未开始")
-        self.bubble_count_status_label.setText("0")
-        self.fps_status_label.setText("0.0")
+        self.fps_status_label.setText("0.00")
         self.frame_info_label.setText("帧: 0/0")
         self.time_info_label.setText("时间: 00:00")
         self.progress_bar.setValue(0)
@@ -526,7 +495,7 @@ class RealtimeMainWindow(QMainWindow):
             video_info = f"视频: {os.path.basename(file_path)} | "
             video_info += f"分辨率: {int(self.processor.cap.get(cv2.CAP_PROP_FRAME_WIDTH))}×{int(self.processor.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))} | "
             video_info += f"帧数: {self.processor.total_frames} | "
-            video_info += f"帧率: {self.processor.video_fps:.1f} FPS"
+            video_info += f"帧率: {self.processor.video_fps:.2f} FPS"
             self.video_info_label.setText(video_info)
             
             # 设置视频显示控件的分辨率
@@ -633,50 +602,62 @@ class RealtimeMainWindow(QMainWindow):
         self.status_label.setText("已重置")
         
     def update_display(self, frame_data):
-        """更新GUI显示（主线程中调用）"""
+        """更新显示"""
         try:
-            # 更新帧计数
-            self.frame_count = frame_data.get('frame_idx', 0)
-            
-            # 更新视频显示
-            if 'original_frame' in frame_data:
-                # 转换BGR到RGB
-                rgb_frame = cv2.cvtColor(frame_data['original_frame'], cv2.COLOR_BGR2RGB)
-                self.original_video_widget.display_frame(rgb_frame)
-            else:
-                # 若没有原始帧，显示默认消息
-                self.original_video_widget.setText("未获取到原始视频帧")
-                
-            if 'processed_frame' in frame_data:
-                # 转换BGR到RGB
-                rgb_processed = cv2.cvtColor(frame_data['processed_frame'], cv2.COLOR_BGR2RGB) 
-                self.video_widget.display_frame(rgb_processed)
-            else:
-                # 若没有处理后帧，显示默认消息
-                self.video_widget.setText("未获取到处理后视频帧")
-                
-            # 更新统计信息和进度条
-            self.bubble_count_status_label.setText(str(frame_data.get('bubble_count', 0)))
-            self.fps_status_label.setText(f"{frame_data.get('fps', 0.0):.1f}")
+            # 更新FPS显示（两位小数）
+            fps = frame_data.get('fps', 0.0)
+            self.fps_status_label.setText(f"FPS: {fps:.2f}")
             
             # 更新进度条
             progress = frame_data.get('progress', 0)
             self.progress_bar.setValue(int(progress))
             
-            # 更新状态栏
-            if 'log' in frame_data:
-                self.status_label.setText(frame_data['log'])
-            elif 'error' in frame_data:
-                self.status_label.setText(f"错误: {frame_data['error']}")
+            # 更新处理时间
+            processing_time = frame_data.get('processing_time', 0)
+            self.processing_time_label.setText(f"处理时间: {processing_time*1000:.1f}ms")
+            
+            # 更新帧索引
+            frame_idx = frame_data.get('frame_idx', 0)
+            self.frame_count = frame_idx + 1  # 新增：实时更新已处理帧数
+            total_frames = self.processor.total_frames if self.processor else 0
+            self.frame_idx_label.setText(f"帧: {frame_idx}")
+            self.frame_info_label.setText(f"帧: {frame_idx}/{total_frames}")
+            
+            # 更新时间（进度条上方和右侧）
+            if hasattr(self.processor, 'video_fps') and self.processor.video_fps > 0:
+                seconds = frame_idx / self.processor.video_fps
+                total_seconds = total_frames / self.processor.video_fps if total_frames else 0
+                minutes = int(seconds / 60)
+                seconds_int = int(seconds % 60)
+                total_minutes = int(total_seconds / 60)
+                total_seconds_int = int(total_seconds % 60)
+                time_str = f"{minutes:02d}:{seconds_int:02d}/{total_minutes:02d}:{total_seconds_int:02d}"
             else:
-                self.status_label.setText(f"处理帧 {self.frame_count}，检测到 {frame_data.get('bubble_count', 0)} 个气泡")
+                time_str = "00:00/00:00"
+            self.time_info_label.setText(f"时间: {time_str}")
+
+            # 状态栏最右侧显示总处理时长（单位：秒，保留一位小数）
+            if self.start_time:
+                elapsed = time.time() - self.start_time
+                self.time_status_label.setText(f"总处理时长: {elapsed:.1f}s")
+            else:
+                self.time_status_label.setText("总处理时长: 0.0s")
             
-            # 更新时间信息（与进度相关）
-            self.update_time_info()
+            # 显示原始视频帧
+            if 'original_frame' in frame_data:
+                rgb_frame = cv2.cvtColor(frame_data['original_frame'], cv2.COLOR_BGR2RGB)
+                self.original_video_widget.display_frame(rgb_frame)
+            else:
+                self.original_video_widget.setText("未获取到原始视频帧")
             
+            # 显示处理后视频帧
+            if 'processed_frame' in frame_data:
+                rgb_processed = cv2.cvtColor(frame_data['processed_frame'], cv2.COLOR_BGR2RGB)
+                self.video_widget.display_frame(rgb_processed)
+            else:
+                self.video_widget.setText("未获取到处理后视频帧")
         except Exception as e:
-            self.logger.error(f"更新界面显示失败: {str(e)}")
-            self.status_label.setText(f"界面更新错误: {str(e)}")
+            self.logger.error(f"更新显示时出错: {str(e)}")
     
     def update_time_info(self):
         """更新时间信息"""
@@ -979,3 +960,8 @@ class RealtimeMainWindow(QMainWindow):
         
         # 接受关闭事件
         event.accept()
+
+    def add_top_right_controls(self, main_layout):
+        """在界面右上角添加开始、暂停、停止按钮"""
+        # 删除右上角按钮，不再添加任何控件
+        pass

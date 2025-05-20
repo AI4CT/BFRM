@@ -65,7 +65,7 @@ def main():
         app.setOrganizationDomain("ipe.ac.cn")
         
         # 设置应用图标（如果存在）
-        icon_path = os.path.join("icons", "bfrm_icon.ico")
+        icon_path = os.path.join("icons", "bubble.ico")
         if os.path.exists(icon_path):
             app.setWindowIcon(QIcon(icon_path))
         
